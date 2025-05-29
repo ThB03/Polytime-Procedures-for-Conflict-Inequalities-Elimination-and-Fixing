@@ -17,9 +17,17 @@ A conflict graph             |  Two hopscotch paths
 pip install -r requirements.txt
 ```
 
+## Run
+
+```
+python main.py path/to/config.json [--max_vars N]
+```
+
 ## config.json
 The config file can specify a batch of runs. A particular run might look like this:
-* "Problem": "LB+UB"
-* "Model": "APX"
-* "s": 2
-* "Instance": "karate"
+"entry_name": {
+  "filepath": "path/to/problem",
+  "category": "<category>",
+  "fixing": true,
+  "elimination": true
+}

@@ -1,0 +1,154 @@
+{
+  "supportcase14": {
+    "filepath": "problems/easy_problems/supportcase14.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "supportcase16": {
+    "filepath": "problems/easy_problems/supportcase16.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "acc-tight5": {
+    "filepath": "problems/easy_problems/acc-tight5.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-1330346": {
+    "filepath": "problems/easy_problems/neos-1330346.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "bnatt400": {
+    "filepath": "problems/easy_problems/bnatt400.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-831188": {
+    "filepath": "problems/easy_problems/neos-831188.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-1324574": {
+    "filepath": "problems/easy_problems/neos-1324574.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "bley_xl1": {
+    "filepath": "problems/easy_problems/bley_xl1.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "cap6000": {
+    "filepath": "problems/easy_problems/cap6000.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "air04": {
+    "filepath": "problems/easy_problems/air04.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "ex9": {
+    "filepath": "problems/easy_problems/ex9.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "decomp1": {
+    "filepath": "problems/easy_problems/decomp1.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "air03": {
+    "filepath": "problems/easy_problems/air03.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-633273": {
+    "filepath": "problems/easy_problems/neos-633273.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-3148108-pahi": {
+    "filepath": "problems/easy_problems/neos-3148108-pahi.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "decomp2": {
+    "filepath": "problems/easy_problems/decomp2.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+
+  "reblock354": {
+    "filepath": "problems/hard_problems/reblock354.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "opm2-z10-s4": {
+    "filepath": "problems/hard_problems/opm2-z10-s4.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "opm2-z12-s8": {
+    "filepath": "problems/hard_problems/opm2-z12-s8.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-4954274-beardy": {
+    "filepath": "problems/hard_problems/neos-4954274-beardy.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "supportcase10": {
+    "filepath": "problems/hard_problems/supportcase10.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+
+  "circ10-3": {
+    "filepath": "problems/open_problems/circ10-3.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "supportcase2": {
+    "filepath": "problems/open_problems/supportcase2.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "rmine11": {
+    "filepath": "problems/open_problems/rmine11.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "core2586-950": {
+    "filepath": "problems/open_problems/core2586-950.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  }
+}

@@ -10,13 +10,11 @@ A conflict graph             |  Two hopscotch paths
 ## Requirements
 - Python 3.11 (**required**)
 - Required libraries (listed in `requirements.txt`)
-- ```bash pip install -r requirements.txt
 
-## Run
-You can run the code from command line, like this:
+## Install Requirements
 
 ```
-C:\Partitioning-a-graph-into-low-diameter-clusters\src>python main.py config.json 1>>log-file.txt 2>>error-file.txt
+pip install -r requirements.txt
 ```
 
 ## config.json

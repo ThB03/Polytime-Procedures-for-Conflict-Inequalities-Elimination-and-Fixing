@@ -5,6 +5,6 @@ We identify a new structure in the conflict graphs of MIP formulations with bina
 
 A conflict graph             |  Two hopscotch paths
 :-------------------------:|:-------------------------:
-![](readme_images/conflict_graph_github.png?raw=true "A conflict graph")   |  ![](readme_images/hopscotch_paths_github.png?raw=true "Two hopscotch paths")
+![](readme_images/conflict_graph_github.PNG?raw=true "A conflict graph")   |  ![](readme_images/hopscotch_paths_github.PNG?raw=true "Two hopscotch paths")
 
 

@@ -455,11 +455,11 @@ def run_analysis_gurobi(filepath: str, tag: str, max_vars: int, results_dir: str
         configs.append(("Elimination Only", {"DE": DE_orig, "IE": IE_orig}))
     if has_fix:
         configs.append(("Fixing Only", {"F0": F0_orig, "F1": F1_orig}))
-    if has_conf:
-        configs.append(("Added Edges Only", {"AE": AE}))
+    # if has_conf:
+        # configs.append(("Added Edges Only", {"AE": AE}))
     if has_elim or has_fix or has_conf:
         configs.append(("All Preprocessing", {
-            "F0": F0_all, "F1": F1_all, "DE": DE_all, "IE": IE_all, "AE": AE
+            "F0": F0_all, "F1": F1_all, "DE": DE_all, "IE": IE_all
         }))
 
     results = []

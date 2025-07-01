@@ -1,0 +1,20 @@
+{
+    "neos-4954274-beardy": {
+    "filepath": "problems/hard_problems/neos-4954274-beardy.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "supportcase10": {
+    "filepath": "problems/hard_problems/supportcase10.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "rmine11": {
+    "filepath": "problems/open_problems/rmine11.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  }
+}

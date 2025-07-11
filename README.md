@@ -18,9 +18,14 @@ pip install -r requirements.txt
 ```
 
 ## Run
-
+To gather elimination, fixing, and conflicts:
 ```
 python main.py path/to/config.json [--max_vars N]
+```
+
+To compare solve times using gurobi:
+```
+python main_gurobi.py path/to/config.json [--max_vars N]
 ```
 
 ## config.json

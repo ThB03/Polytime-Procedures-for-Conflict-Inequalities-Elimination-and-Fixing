@@ -1,0 +1,8 @@
+instance,category,n,m,HSC_conflicts,ANS_conflicts,imp_conflicts (%)
+supportcase14.mps,easy,608,5204,0,0,N/A
+supportcase16.mps,easy,638,6084,0,0,N/A
+acc-tight5.mps,easy,2678,20859,0,0,N/A
+neos-1330346.mps,easy,5328,6624,0,0,N/A
+bnatt400.mps,easy,7200,11639,0,0,N/A
+neos-831188.mps,easy,9224,35734,0,0,N/A
+neos-1324574.mps,easy,10512,10512,0,0,N/A

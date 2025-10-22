@@ -1,3 +1,0 @@
-instance,category,n,m,bfs_time (s),ANS_preprocess_time (s),HSC_elimination_time (s),ANS_elimination_time (s)
-supportcase14.mps,easy,608,5204,1.397033452987671,0.021373510360717773,0.0027778148651123047,0.0
-supportcase16.mps,easy,638,6084,1.1835174560546875,0.015495777130126953,0.0025234222412109375,0.0

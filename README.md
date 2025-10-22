@@ -27,7 +27,15 @@ To compare solve times using gurobi:
 ```
 python main_gurobi.py path/to/config.json [--max_vars N]
 ```
+To gather elimination, fixing, and conflicts on gpu:
+```
+python main_gpu.py path/to/config.json [--max_vars N]
+```
 
+To compare solve times using gurobi on gpu:
+```
+python main_gurobi_gpu.py path/to/config.json [--max_vars N]
+```
 ## config.json
 The config file can specify a batch of runs. A particular run might look like this:
 

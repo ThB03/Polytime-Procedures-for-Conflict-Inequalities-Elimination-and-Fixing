@@ -1,0 +1,8 @@
+instance,category,n,m,HSC_direct_elimination,ANS_direct_elimination,imp_direct_elimination (%),HSC_indirect_elimination,ANS_indirect_elimination,imp_indirect_elimination (%)
+supportcase14.mps,easy,608,5204,18,0,N/A,6,0,N/A
+supportcase16.mps,easy,638,6084,18,0,N/A,6,0,N/A
+acc-tight5.mps,easy,2678,20859,12,0,N/A,19,0,N/A
+neos-1330346.mps,easy,5328,6624,36,0,N/A,0,0,N/A
+bnatt400.mps,easy,7200,11639,0,0,N/A,0,0,N/A
+neos-831188.mps,easy,9224,35734,20,0,N/A,0,0,N/A
+neos-1324574.mps,easy,10512,10512,36,0,N/A,0,0,N/A

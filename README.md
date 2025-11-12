@@ -17,6 +17,12 @@ A conflict graph             |  Two hopscotch paths
 pip install -r requirements.txt
 ```
 
+To download network-metis on anaconda run the following command on your conda environment
+```
+conda install -c conda-forge networkx-metis   
+```
+
+
 ## Run
 To gather elimination, fixing, and conflicts:
 ```

@@ -503,18 +503,25 @@ def run_analysis_gurobi(
                 IE_all |= set(ie_aug)
                 t_elim_aug += elim_time_aug
 
-    # Configurations
+    # Configurations (skip comparisons when no changes)
+    has_elim_changes = has_elim and (bool(DE_orig) or bool(IE_orig))
+    has_fix_changes = has_fix and (bool(F0_orig) or bool(F1_orig))
+    has_conf_changes = bool(AE)
+    any_changes = has_elim_changes or has_fix_changes or has_conf_changes
+
     configs = [("No Preprocessing", {})]
-    if has_elim:
+    if has_elim_changes:
         configs.append(("Elimination Only", {"DE": DE_orig, "IE": IE_orig}))
-    if has_fix:
+    if has_fix_changes:
         configs.append(("Fixing Only", {"F0": F0_orig, "F1": F1_orig}))
-    if has_conf:
+    if has_conf_changes:
         configs.append(("Added Edges Only", {"AE": AE}))
-    if has_elim or has_fix or has_conf:
+    if any_changes:
         configs.append(("All Preprocessing", {
             "F0": F0_all, "F1": F1_all, "DE": DE_all, "IE": IE_all, "AE": AE
         }))
+    else:
+        print("No elimination, fixing, or added-edge changes detected; skipping comparative runs.")
 
     results = []
 
@@ -620,7 +627,7 @@ def run_analysis_gurobi(
 def main():
     parser = argparse.ArgumentParser(description="Run Gurobi analysis from a JSON config file.")
     parser.add_argument("config_path", type=str, help="Path to the JSON config file.")
-    parser.add_argument("--max_vars", type=int, default=15000, help="Max number of variables allowed.")
+    parser.add_argument("--max_vars", type=int, default=10000000, help="Max number of variables allowed.")
     parser.add_argument("--tag", type=str, default="", help="Optional tag for CSV files.")
     parser.add_argument("--no_elim", action="store_true", help="Disable elimination.")
     parser.add_argument("--no_fix", action="store_true", help="Disable fixing.")

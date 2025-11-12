@@ -463,7 +463,7 @@ def run_analysis(filepath: str, tag: str, max_vars: int, results_dir: str, has_e
 def main():
     parser = argparse.ArgumentParser(description="Run analysis from a config file.")
     parser.add_argument("config_path", type=str, help="Path to the JSON config file.")
-    parser.add_argument("--max-vars", type=int, default=15000, help="Maximum number of variables allowed.")
+    parser.add_argument("--max-vars", type=int, default=10000000, help="Maximum number of variables allowed.")
     parser.add_argument(
         "--partition-threshold",
         type=int,

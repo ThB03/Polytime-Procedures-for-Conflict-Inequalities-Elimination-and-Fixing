@@ -1,0 +1,512 @@
+{
+  "a2864-99blp": {
+    "filepath": "problems/open_problems/a2864-99blp.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "academictimetablebig": {
+    "filepath": "problems/hard_problems/academictimetablebig.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "academictimetablesmall": {
+    "filepath": "problems/easy_problems/academictimetablesmall.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "bab1": {
+    "filepath": "problems/hard_problems/bab1.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "bab2": {
+    "filepath": "problems/hard_problems/bab2.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "bab3": {
+    "filepath": "problems/open_problems/bab3.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "bab5": {
+    "filepath": "problems/easy_problems/bab5.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "bab6": {
+    "filepath": "problems/hard_problems/bab6.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "chromaticindex1024-7": {
+    "filepath": "problems/easy_problems/chromaticindex1024-7.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "chromaticindex256-8": {
+    "filepath": "problems/easy_problems/chromaticindex256-8.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "chromaticindex512-7": {
+    "filepath": "problems/easy_problems/chromaticindex512-7.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "co-100": {
+    "filepath": "problems/easy_problems/co-100.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "core2536-691": {
+    "filepath": "problems/easy_problems/core2536-691.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "core4284-1064": {
+    "filepath": "problems/open_problems/core4284-1064.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "core4872-1529": {
+    "filepath": "problems/open_problems/core4872-1529.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "datt256": {
+    "filepath": "problems/open_problems/datt256.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "ds": {
+    "filepath": "problems/hard_problems/ds.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "ds-big": {
+    "filepath": "problems/open_problems/ds-big.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "eilC76-2": {
+    "filepath": "problems/easy_problems/eilC76-2.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "ex10": {
+    "filepath": "problems/easy_problems/ex10.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "ex1010-pi": {
+    "filepath": "problems/open_problems/ex1010-pi.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "fast0507": {
+    "filepath": "problems/easy_problems/fast0507.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "graph20-80-1rand": {
+    "filepath": "problems/hard_problems/graph20-80-1rand.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "graph40-20-1rand": {
+    "filepath": "problems/open_problems/graph40-20-1rand.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "graph40-40-1rand": {
+    "filepath": "problems/open_problems/graph40-40-1rand.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "graph40-80-1rand": {
+    "filepath": "problems/open_problems/graph40-80-1rand.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "irp": {
+    "filepath": "problems/easy_problems/irp.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "ivu06": {
+    "filepath": "problems/open_problems/ivu06.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "ivu06-big": {
+    "filepath": "problems/open_problems/ivu06-big.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "ivu52": {
+    "filepath": "problems/hard_problems/ivu52.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "mining": {
+    "filepath": "problems/open_problems/mining.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "n2seq36q": {
+    "filepath": "problems/easy_problems/n2seq36q.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "n3div36": {
+    "filepath": "problems/easy_problems/n3div36.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "n3seq24": {
+    "filepath": "problems/easy_problems/n3seq24.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-2075418-temuka": {
+    "filepath": "problems/infeasible_problems/neos-2075418-temuka.mps",
+    "category": "infeasible",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-3237086-abava": {
+    "filepath": "problems/hard_problems/neos-3237086-abava.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-3322547-alsek": {
+    "filepath": "problems/open_problems/neos-3322547-alsek.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-3555904-turama": {
+    "filepath": "problems/easy_problems/neos-3555904-turama.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-3988577-wolgan": {
+    "filepath": "problems/infeasible_problems/neos-3988577-wolgan.mps",
+    "category": "infeasible",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-4531126-vouga": {
+    "filepath": "problems/open_problems/neos-4531126-vouga.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-4754521-awarau": {
+    "filepath": "problems/easy_problems/neos-4754521-awarau.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-5052403-cygnet": {
+    "filepath": "problems/easy_problems/neos-5052403-cygnet.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-578379": {
+    "filepath": "problems/easy_problems/neos-578379.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-827015": {
+    "filepath": "problems/easy_problems/neos-827015.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-829552": {
+    "filepath": "problems/easy_problems/neos-829552.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-876808": {
+    "filepath": "problems/easy_problems/neos-876808.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-885524": {
+    "filepath": "problems/easy_problems/neos-885524.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-913984": {
+    "filepath": "problems/easy_problems/neos-913984.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-948346": {
+    "filepath": "problems/easy_problems/neos-948346.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-952987": {
+    "filepath": "problems/hard_problems/neos-952987.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-953928": {
+    "filepath": "problems/easy_problems/neos-953928.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-954925": {
+    "filepath": "problems/hard_problems/neos-954925.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-956971": {
+    "filepath": "problems/easy_problems/neos-956971.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-957143": {
+    "filepath": "problems/easy_problems/neos-957143.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-957323": {
+    "filepath": "problems/easy_problems/neos-957323.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "neos-960392": {
+    "filepath": "problems/easy_problems/neos-960392.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "netdiversion": {
+    "filepath": "problems/easy_problems/netdiversion.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "ns1828997": {
+    "filepath": "problems/open_problems/ns1828997.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "pb-fit2d": {
+    "filepath": "problems/easy_problems/pb-fit2d.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "pb-gfrd-pnc": {
+    "filepath": "problems/open_problems/pb-gfrd-pnc.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "pb-grow22": {
+    "filepath": "problems/open_problems/pb-grow22.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "rail01": {
+    "filepath": "problems/easy_problems/rail01.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "rail02": {
+    "filepath": "problems/easy_problems/rail02.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "rail03": {
+    "filepath": "problems/hard_problems/rail03.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "rail507": {
+    "filepath": "problems/easy_problems/rail507.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "rmine13": {
+    "filepath": "problems/open_problems/rmine13.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "rmine15": {
+    "filepath": "problems/open_problems/rmine15.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "rmine21": {
+    "filepath": "problems/open_problems/rmine21.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "rmine25": {
+    "filepath": "problems/open_problems/rmine25.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "s100": {
+    "filepath": "problems/hard_problems/s100.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "scpj4scip": {
+    "filepath": "problems/open_problems/scpj4scip.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "scpk4": {
+    "filepath": "problems/open_problems/scpk4.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "scpl4": {
+    "filepath": "problems/open_problems/scpl4.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "scpm1": {
+    "filepath": "problems/open_problems/scpm1.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "scpn2": {
+    "filepath": "problems/open_problems/scpn2.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "sp98ar": {
+    "filepath": "problems/easy_problems/sp98ar.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "stp3d": {
+    "filepath": "problems/hard_problems/stp3d.mps",
+    "category": "hard",
+    "fixing": true,
+    "elimination": true
+  },
+  "supportcase11": {
+    "filepath": "problems/easy_problems/supportcase11.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "t1717": {
+    "filepath": "problems/open_problems/t1717.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "t1722": {
+    "filepath": "problems/open_problems/t1722.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  },
+  "tanglegram4": {
+    "filepath": "problems/easy_problems/tanglegram4.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "tbfp-network": {
+    "filepath": "problems/easy_problems/tbfp-network.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "vpphard": {
+    "filepath": "problems/easy_problems/vpphard.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "vpphard2": {
+    "filepath": "problems/easy_problems/vpphard2.mps",
+    "category": "easy",
+    "fixing": true,
+    "elimination": true
+  },
+  "z26": {
+    "filepath": "problems/open_problems/z26.mps",
+    "category": "open",
+    "fixing": true,
+    "elimination": true
+  }
+}

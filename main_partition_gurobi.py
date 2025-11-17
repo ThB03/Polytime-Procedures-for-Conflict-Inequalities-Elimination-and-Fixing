@@ -55,6 +55,7 @@ def create_conflict_graph(model: Model, parts: int):
             if not nodes:
                 continue
             partitions.append(graph.subgraph(nodes).copy())
+            print(f"Nodes in partition : {len(nodes)}")
     except Exception:
         partitions = [graph]
 
@@ -459,8 +460,11 @@ def run_analysis_gurobi(
         AE = set()
 
         t_bfs = t_fix = t_elim = t_conf = 0.0
-
+        print(f"Number of partitions: {len(partitions)}")
+        count = 0
         for subgraph in partitions:
+            count +=1
+            print(f"Running for partition {count}")
             if subgraph.number_of_nodes() == 0:
                 continue
 

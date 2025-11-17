@@ -60,6 +60,7 @@ def create_conflict_graph(model: Model, parts: int):
 
     if not partitions:
         partitions = [graph]
+    print(f"Graph partitioned into {len(partitions)} parts.")
     return graph, partitions
 
 

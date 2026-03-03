@@ -339,6 +339,9 @@ def substitute_variables_in_model(model, substitution_map):
     model.update()
 
 def apply_changes_to_model(model, F0, F1, DE, IE, AE):
+
+    print(DE)
+    print(IE)
     """
     Applies all known reductions and constraints to a Gurobi model:
     - Fixes variables from F0 and F1

@@ -48,8 +48,7 @@ def main():
 
     for idx, filepath in enumerate(files, start=1):
         print(f"[{idx}/{len(files)}] Processing {filepath.name}")
-        if not filepath.name.startswith("air03.mps"):
-            continue
+        
         # Prepare the base dictionary with N/A
         problem_info = {k: "N/A" for k in fieldnames}
         problem_info['problem'] = filepath.name

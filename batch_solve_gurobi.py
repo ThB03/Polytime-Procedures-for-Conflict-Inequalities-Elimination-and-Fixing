@@ -67,7 +67,7 @@ def main():
 
     for idx, filepath in enumerate(files, start=1):
         print(f"[{idx}/{len(files)}] Processing {filepath.name}")
-        
+
         problem_info = {k: "N/A" for k in fieldnames}
         problem_info['problem'] = filepath.name
 
@@ -177,8 +177,16 @@ def main():
                 configs.append(("Elimination_Only", {"DE": DE_pairs, "IE": IE_pairs}))
             if len(f0) > 0 or len(f1) > 0:
                 configs.append(("Fixing_Only", {"F0": f0, "F1": f1}))
-            if has_reductions:
+            if len(configs) == 3: # If we have both types of reductions, also test them combined
                 configs.append(("All_Preprocessing", {"F0": f0, "F1": f1, "DE": DE_pairs, "IE": IE_pairs}))
+            
+            # If no reductions are found, this will be the only entry for this problem.
+            if not has_reductions:
+                problem_info['config'] = "No_Reductions_Found"
+                with open(csv_path, 'a', newline='') as f:
+                    csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
+                print(f"   No reductions found for {filepath.name}. Skipping Gurobi.")
+                continue # Move to the next problem file
 
             try:
                 gurobi_base_model = gp.read(str(filepath))

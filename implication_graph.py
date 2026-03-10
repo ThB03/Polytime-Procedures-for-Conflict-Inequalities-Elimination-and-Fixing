@@ -83,27 +83,11 @@ def create_conflict_graph(model: Model):
     return g_conflict, g_implication
 
 
-def transitive_closure(graph, nodes=None, method='auto', reflexive=True):
+def transitive_closure(graph, nodes=None, method='auto', reflexive=True, return_matrix=False):
     """
     Compute the transitive closure of a directed graph.
-
-    Parameters
-    - graph: a NetworkX DiGraph or an adjacency mapping {node: iterable(neighbors)}.
-    - nodes: optional iterable of all nodes (if not provided it's inferred).
-    - method: 'auto'|'bitset'|'matrix'|'matrix_torch'|'bfs'|'bfs_gpu'|'bfs_torch'.
-      'auto' picks based on size/density.  'bfs_gpu'/'bfs_torch' run a parallel
-      BFS on a torch tensor (falls back to cpu when CUDA is unavailable).
-    - reflexive: if True include each node in its own reachable set.
-
-    Returns
-    - dict: node -> set(of reachable nodes)
-
-    Implementation notes
-    - For small/medium graphs: bitset Warshall (fast bitwise ops).
-    - For large dense graphs: matrix multiplication (numpy bool semiring).
-    - For large sparse graphs: per-node BFS (memory-efficient).
+    Returns either a dict (node -> set) or a boolean matrix (ndarray/tensor).
     """
-    # Normalize adjacency mapping and collect nodes
     if nodes is None:
         if hasattr(graph, 'nodes') and hasattr(graph, 'successors'):
             nodes = list(graph.nodes)
@@ -111,100 +95,93 @@ def transitive_closure(graph, nodes=None, method='auto', reflexive=True):
         else:
             nodes = list(graph.keys())
             adj_iter = lambda u: graph.get(u, ())
-            # also ensure to include any targets not present as keys
             for nbrs in graph.values():
                 for v in nbrs:
-                    if v not in nodes:
-                        nodes.append(v)
+                    if v not in nodes: nodes.append(v)
     else:
         nodes = list(nodes)
-        if hasattr(graph, 'successors'):
-            adj_iter = lambda u: graph.successors(u)
-        else:
-            adj_iter = lambda u: graph.get(u, ())
+        adj_iter = lambda u: graph.successors(u) if hasattr(graph, 'successors') else graph.get(u, ())
 
     n = len(nodes)
     index = {node: i for i, node in enumerate(nodes)}
-
-    # Quick edge count
-    m = 0
-    for u in nodes:
-        for v in adj_iter(u):
-            m += 1
-
-    # Heuristic: use bitset for small graphs, matrix for large dense, bfs for large sparse
+    
+    # Heuristic for method
     if method == 'auto':
-        if n == 0:
-            return {}
-        if n <= 1000:
-            method = 'bitset'
-        elif m > n * 10:  # dense graph
-            method = 'matrix'
-        else:
-            method = 'bfs'
-    if method == 'matrix':
-        # Use matrix multiplication (CPU via numpy / CuPy via transitive_closure_gpu)
-        return transitive_closure_gpu(graph, nodes=nodes, reflexive=reflexive, backend='numpy')
-    elif method == 'matrix_torch':
-        # Use PyTorch-backed matrix multiplication (GPU if CUDA available)
-        return transitive_closure_torch(graph, nodes=nodes, reflexive=reflexive, device='cuda')
-    elif method in ('bfs_gpu','bfs_torch'):
-        # Perform a batch BFS/boolean-frontier algorithm entirely on torch;
-        # will fall back to CPU when CUDA is not available.
-        return transitive_closure_bfs_torch(graph, nodes=nodes, reflexive=reflexive, device='cuda')
-    elif method == 'bfs':
-        # Per-node BFS/DFS (sparse-friendly) on CPU
-        out = {}
-        for u in nodes:
-            visited = set()
-            stack = [u]
-            while stack:
-                x = stack.pop()
-                for v in adj_iter(x):
-                    if v not in visited and v != u:
-                        visited.add(v)
-                        stack.append(v)
-            if reflexive:
-                visited.add(u)
-            out[u] = visited
-        return out
+        if n == 0: return {} if not return_matrix else np.zeros((0,0))
+        if n <= 1000: method = 'bitset'
+        elif torch is not None: method = 'matrix_torch'
+        else: method = 'bfs'
 
-    # Bitset method
-    # Build adjacency as bitsets
+    # Delegate to specialized implementations
+    if method == 'matrix':
+        return transitive_closure_gpu(graph, nodes=nodes, reflexive=reflexive, backend='numpy', return_matrix=return_matrix)
+    elif method == 'matrix_torch':
+        return transitive_closure_torch(graph, nodes=nodes, reflexive=reflexive, device='cuda', return_matrix=return_matrix)
+    elif method in ('bfs_gpu', 'bfs_torch'):
+        return transitive_closure_bfs_torch(graph, nodes=nodes, reflexive=reflexive, device='cuda', return_matrix=return_matrix)
+    elif method == 'bfs':
+        if return_matrix:
+            mat = np.zeros((n, n), dtype=bool)
+            for i, u in enumerate(nodes):
+                visited = {u} if reflexive else set()
+                stack = [u]
+                while stack:
+                    x = stack.pop()
+                    for v in adj_iter(x):
+                        if v not in visited:
+                            visited.add(v)
+                            stack.append(v)
+                for v in visited:
+                    mat[i, index[v]] = True
+            return mat
+        else:
+            out = {}
+            for u in nodes:
+                visited = set()
+                stack = [u]
+                while stack:
+                    x = stack.pop()
+                    for v in adj_iter(x):
+                        if v not in visited and v != u:
+                            visited.add(v)
+                            stack.append(v)
+                if reflexive: visited.add(u)
+                out[u] = visited
+            return out
+
+    # Default: Bitset method
     reach = [0] * n
     for u in nodes:
         ui = index[u]
         for v in adj_iter(u):
-            if v in index:
-                reach[ui] |= 1 << index[v]
+            if v in index: reach[ui] |= 1 << index[v]
     if reflexive:
-        for i in range(n):
-            reach[i] |= 1 << i
+        for i in range(n): reach[i] |= 1 << i
 
-    # Warshall-style propagation using bitsets: for k, add reach[k] to any i that reaches k
-    # for k in range(n):
-    #     rk = reach[k]
-    #     mask = 1 << k
-    #     # iterate i where reach[i] has bit k
-    #     for i in range(n):
-    #         if reach[i] & mask:
-    #             new = reach[i] | rk
-    #             if new != reach[i]:
-    #                 reach[i] = new
     reach = warshall_bitset(reach, n)
 
-    # Convert bitsets to sets of nodes
-    out = {}
-    for i in range(n):
-        b = reach[i]
-        s = set()
-        while b:
-            lsb = b & -b
-            j = (lsb.bit_length() - 1)
-            s.add(nodes[j])
-            b &= b - 1
-        out[nodes[i]] = s
-    return out
+    if return_matrix:
+        mat = np.zeros((n, n), dtype=bool)
+        for i in range(n):
+            b = reach[i]
+            while b:
+                lsb = b & -b
+                j = lsb.bit_length() - 1
+                mat[i, j] = True
+                b &= b - 1
+        return mat
+    else:
+        out = {}
+        for i in range(n):
+            b = reach[i]
+            s = set()
+            while b:
+                lsb = b & -b
+                j = lsb.bit_length() - 1
+                s.add(nodes[j])
+                b &= b - 1
+            out[nodes[i]] = s
+        return out
 
 
 def transitive_closure_gpu(graph, nodes=None, reflexive=True, backend='cupy', return_matrix=False):

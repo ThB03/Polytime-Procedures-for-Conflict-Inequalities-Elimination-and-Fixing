@@ -116,9 +116,9 @@ def transitive_closure(graph, nodes=None, method='auto', reflexive=True, return_
     if method == 'matrix':
         return transitive_closure_gpu(graph, nodes=nodes, reflexive=reflexive, backend='numpy', return_matrix=return_matrix)
     elif method == 'matrix_torch':
-        return transitive_closure_torch(graph, nodes=nodes, reflexive=reflexive, device='cuda', return_matrix=return_matrix)
+        return transitive_closure_torch(graph, nodes=nodes, reflexive=reflexive, return_matrix=return_matrix)
     elif method in ('bfs_gpu', 'bfs_torch'):
-        return transitive_closure_bfs_torch(graph, nodes=nodes, reflexive=reflexive, device='cuda', return_matrix=return_matrix)
+        return transitive_closure_bfs_torch(graph, nodes=nodes, reflexive=reflexive, return_matrix=return_matrix)
     elif method == 'bfs':
         if return_matrix:
             mat = np.zeros((n, n), dtype=bool)

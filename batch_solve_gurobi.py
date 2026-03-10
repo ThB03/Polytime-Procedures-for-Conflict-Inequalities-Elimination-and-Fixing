@@ -68,10 +68,6 @@ def main():
     for idx, filepath in enumerate(files, start=1):
         print(f"[{idx}/{len(files)}] Processing {filepath.name}")
         
-        # Optional: specific filter as per your request
-        if not filepath.name.startswith("air03.mps"):
-            continue
-
         problem_info = {k: "N/A" for k in fieldnames}
         problem_info['problem'] = filepath.name
 

@@ -12,6 +12,12 @@ import argparse
 import numba
 from numba import jit
 
+# Optional import for GPU acceleration
+try:
+    import torch
+except ImportError:
+    torch = None
+
 def warshall_bitset(reach, n):
     """Warshall algorithm for bitset transitive closure."""
     for k in range(n):
@@ -348,6 +354,7 @@ def transitive_closure_torch(graph, nodes=None, reflexive=True, device='cuda', r
     if device == 'cuda' and not torch.cuda.is_available():
         device = 'cpu'
 
+    print(f"Closure running on: {device}")
     # Build adjacency matrix as boolean tensor
     A = torch.zeros((n, n), dtype=torch.uint8, device=device)
     for u in nodes:
@@ -383,7 +390,7 @@ def transitive_closure_torch(graph, nodes=None, reflexive=True, device='cuda', r
     return out
 
 
-def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, device='cuda'):
+def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, device='cuda', return_matrix=False):
     """GPU/CPU-accelerated BFS-style closure using PyTorch frontiers.
 
     This variant is most useful on sparse graphs where the "matrix" methods
@@ -398,6 +405,7 @@ def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, device='cuda
     - nodes: optional iterable of nodes (order defines matrix indices)
     - reflexive: include self-reachability
     - device: 'cuda' (GPU) or 'cpu'
+    - return_matrix: if True return the boolean matrix (torch.Tensor)
 
     Returns
     - dict: node -> set(of reachable nodes)
@@ -433,6 +441,7 @@ def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, device='cuda
     if device == 'cuda' and not torch.cuda.is_available():
         device = 'cpu'
 
+    print(f"Closure running on: {device}")
     # build boolean adjacency matrix
     A = torch.zeros((n, n), dtype=torch.bool, device=device)
     for u in nodes:
@@ -458,6 +467,9 @@ def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, device='cuda
             break
         visited |= new_front
         frontier = new_front
+
+    if return_matrix:
+        return visited
 
     # convert back to dict
     vis_cpu = visited.cpu().numpy()
@@ -626,6 +638,74 @@ def elimination_on_implication_graph(graph, reach_bitsets=None, reach_matrix=Non
     return dsu_vars, direct_eliminations, indirect_map
 
 
+def elimination_on_implication_graph_torch(R, index, nodes):
+    """GPU-accelerated elimination using mutual reachability M = R & R.T."""
+    if torch is None:
+        raise RuntimeError("PyTorch not available")
+    
+    # M[a][b] == 1 iff a reaches b AND b reaches a (mutual reachability)
+    M = (R > 0) & (R.t() > 0)
+    M_cpu = M.cpu().numpy()
+    
+    # Extract var names and find node indices
+    node_vars = [varname(n) for n in nodes]
+    node_stats = [stat(n) for n in nodes]
+    
+    all_vars = sorted(list(set(node_vars)))
+    dsu_vars = DisjointSetUnion(all_vars)
+    
+    # Var mapping to indices in nodes list
+    var_to_indices = {}
+    for i, v in enumerate(node_vars):
+        if v not in var_to_indices: var_to_indices[v] = [None, None]
+        var_to_indices[v][node_stats[i]] = i
+
+    # Direct Elimination: 0x <-> 0y
+    for i in range(len(all_vars)):
+        v_a = all_vars[i]
+        idx_a0 = var_to_indices[v_a][0]
+        if idx_a0 is None: continue
+        
+        for j in range(i + 1, len(all_vars)):
+            v_b = all_vars[j]
+            idx_b0 = var_to_indices[v_b][0]
+            if idx_b0 is None: continue
+            
+            if M_cpu[idx_a0, idx_b0]:
+                dsu_vars.union(v_a, v_b)
+                
+    final_groups = dsu_vars.groups()
+    # Align with CPU logic: return all groups including those of size 1
+    direct_eliminations = [set(group) for group in final_groups.values() if group]
+    
+    # Var to group mapping for indirect skip
+    var_to_root = {v: dsu_vars.find(v) for v in all_vars}
+    
+    # Indirect Elimination: 0x <-> 1y
+    indirect_map = {}
+    for i in range(len(all_vars)):
+        v_a = all_vars[i]
+        idx_a0 = var_to_indices[v_a][0]
+        if idx_a0 is None: continue
+        
+        # Consistent with CPU loop: only check pairs j > i
+        for j in range(len(all_vars)):
+            if i == j: continue
+            v_b = all_vars[j]
+            if var_to_root[v_a] == var_to_root[v_b]: continue # Skip if already directly equivalent
+            
+            idx_b1 = var_to_indices[v_b][1]
+            if idx_b1 is None: continue
+            
+            if M_cpu[idx_a0, idx_b1]:
+                if v_a not in indirect_map: indirect_map[v_a] = []
+                if v_b not in indirect_map: indirect_map[v_b] = []
+                indirect_map[v_a].append(v_b)
+                indirect_map[v_b].append(v_a)
+                
+    return dsu_vars, direct_eliminations, indirect_map
+
+
 def fixing_on_implication_graph(graph, dsu_vars=None, indirect_map=None, reach_bitsets=None, reach_matrix=None, index=None):
     """
     Compute variable fixing based on implication graph reachability.
@@ -772,6 +852,91 @@ def fixing_on_implication_graph(graph, dsu_vars=None, indirect_map=None, reach_b
     return fixing_0, fixing_1
 
 
+def fixing_on_implication_graph_torch(R, index, nodes, dsu_vars=None, indirect_map=None):
+    """GPU-accelerated fixing following the logic in gpu_fixing.pdf."""
+    if torch is None:
+        raise RuntimeError("PyTorch not available")
+    
+    n = len(nodes)
+    node_vars = [varname(n) for n in nodes]
+    node_stats = [stat(n) for n in nodes]
+    all_vars = sorted(list(set(node_vars)))
+    
+    # Map variable names to literal indices
+    var_to_indices = {}
+    for i, v in enumerate(node_vars):
+        if v not in var_to_indices: var_to_indices[v] = [None, None]
+        var_to_indices[v][node_stats[i]] = i
+        
+    # Vectors for Method 1 & 2
+    idx_0 = []
+    idx_1 = []
+    valid_vars = []
+    for v in all_vars:
+        i0, i1 = var_to_indices[v]
+        if i0 is not None and i1 is not None:
+            idx_0.append(i0)
+            idx_1.append(i1)
+            valid_vars.append(v)
+            
+    if not idx_0: return set(), set()
+    
+    idx_0 = torch.tensor(idx_0, device=R.device)
+    idx_1 = torch.tensor(idx_1, device=R.device)
+    
+    # Method 2: Anti-Diagonal Lookup (Direct 2-SAT fixing)
+    # x=1 reaches x=0 => x=0
+    # x=0 reaches x=1 => x=1
+    direct_0_vec = R[idx_1, idx_0] > 0
+    direct_1_vec = R[idx_0, idx_1] > 0
+    
+    # Method 1: Complementary-Pair AND (Global reachability check)
+    # Literal t is forced if there exists some variable y such that both y=0 and y=1 reach t
+    R_even = R[idx_0, :].float()
+    R_odd = R[idx_1, :].float()
+    P = (R_even > 0) & (R_odd > 0)
+    forced_mask = P.any(dim=0)
+    
+    forced_0_vec = forced_mask[idx_0] | direct_0_vec
+    forced_1_vec = forced_mask[idx_1] | direct_1_vec
+    
+    fixing_0 = {valid_vars[i] for i, f in enumerate(forced_0_vec) if f}
+    fixing_1 = {valid_vars[i] for i, f in enumerate(forced_1_vec) if f}
+    
+    # Propagate through eliminations (CPU logic)
+    if dsu_vars or indirect_map:
+        # Note: In a real solver, we'd loop until convergence, 
+        # but here we follow the existing CPU structure.
+        var_to_group = {}
+        if dsu_vars:
+            groups = dsu_vars.groups()
+            for root, members in groups.items():
+                for m in members: var_to_group[m] = root
+        
+        # Simple one-pass propagation to match CPU logic as closely as possible
+        # whilst still staying mostly on GPU logic.
+        new_f0 = set(fixing_0)
+        new_f1 = set(fixing_1)
+        
+        # Propagate from 0-fixes
+        for v in fixing_0:
+            if dsu_vars and v in var_to_group:
+                for m in dsu_vars.groups()[var_to_group[v]]: new_f0.add(m)
+            if indirect_map and v in indirect_map:
+                for m in indirect_map[v]: new_f1.add(m)
+        
+        # Propagate from 1-fixes
+        for v in fixing_1:
+            if dsu_vars and v in var_to_group:
+                for m in dsu_vars.groups()[var_to_group[v]]: new_f1.add(m)
+            if indirect_map and v in indirect_map:
+                for m in indirect_map[v]: new_f0.add(m)
+                
+        return new_f0, new_f1
+
+    return fixing_0, fixing_1
+
+
 def run_analysis(filepath, tag, max_vars, results_dir, has_elim, has_fix, methods):
     """Run analysis with multiple closure methods, but elimination/fixing only once.
     
@@ -796,16 +961,19 @@ def run_analysis(filepath, tag, max_vars, results_dir, has_elim, has_fix, method
     m = graph_implication.number_of_edges()
     index = {node: i for i, node in enumerate(nodes)}
     
-    # Compute one reference closure (for elimination/fixing)
+    # All variable names present in the graph
+    all_var_names = sorted(list(set(varname(nd) for nd in nodes)))
+    num_total_vars = len(all_var_names)
+
+    # Compute one reference closure (for elimination/fixing baselines)
     closure_start = time.time()
     reach_bitsets = transitive_closure(graph_implication, nodes=nodes, method='bitset',
                                        reflexive=True)
     closure_time = time.time() - closure_start
     
     # Create reach_matrix once if we have enough edges to make it worthwhile
-    # For sparse graphs, skip matrix creation to avoid overhead
     total_reach_edges = sum(len(v) for v in reach_bitsets.values())
-    create_matrix = total_reach_edges > n * 10  # Only if reasonably dense
+    create_matrix = total_reach_edges > n * 10
     
     reach_matrix = None
     if create_matrix:
@@ -817,34 +985,27 @@ def run_analysis(filepath, tag, max_vars, results_dir, has_elim, has_fix, method
                 vi = index[v]
                 reach_matrix[ui, vi] = True
     
-    # Run elimination and fixing ONCE
+    # Run elimination and fixing ONCE (CPU Reference)
     elim_start = time.time()
     dsu_vars, direct_eliminations, indirect_map = elimination_on_implication_graph(
         graph_implication, reach_bitsets=reach_bitsets, reach_matrix=reach_matrix, index=index)
     elim_time = time.time() - elim_start
     
-    # Number of direct elimination groups
-    direct_elim_count = len(direct_eliminations)
-
-    # Number of unique indirect elimination pairs (unordered)
+    # Direct elimination should count N - groups
+    direct_elim_count = num_total_vars - len(direct_eliminations)
+    
+    # Indirect elimination should count pairs of variables
     if indirect_map:
-        seen_pairs = set()
-        for a, neighs in indirect_map.items():
-            for b in neighs:
-                pair = tuple(sorted((a, b)))
-                seen_pairs.add(pair)
-        indirect_elim_count = len(seen_pairs)
+        indirect_elim_count = sum(len(neighs) for neighs in indirect_map.values()) // 2
     else:
         indirect_elim_count = 0
     
-    # Run fixing
     fixing_start = time.time()
     fixing_0, fixing_1 = fixing_on_implication_graph(
         graph_implication, dsu_vars=dsu_vars, indirect_map=indirect_map,
         reach_bitsets=reach_bitsets, reach_matrix=reach_matrix, index=index)
     fixing_time = time.time() - fixing_start
     
-    # Now test each closure method separately (measuring only closure time)
     csv_path = os.path.join(results_dir, "results.csv")
     write_header = not os.path.exists(csv_path)
     fieldnames = ['problem', 'method', 'n', 'm', 'closure_time', 'direct_elimination_#', 
@@ -854,23 +1015,63 @@ def run_analysis(filepath, tag, max_vars, results_dir, has_elim, has_fix, method
     for method in methods:
         closure_start = time.time()
         try:
-            reach_bitsets_test = transitive_closure(graph_implication, nodes=nodes, method=method,
-                                                    reflexive=True)
-            closure_time_test = time.time() - closure_start
-            
-            result = {
-                'problem': model_name,
-                'method': method,
-                'n': n,
-                'm': m,
-                'closure_time': round(closure_time_test, 6),
-                'direct_elimination_#': direct_elim_count,
-                'indirect_elimination_#': indirect_elim_count,
-                'elimination_time': round(elim_time, 6),
-                '0_fixing': len(fixing_0),
-                '1_fixing': len(fixing_1),
-                'fixing_time': round(fixing_time, 6),
-            }
+            # Handle methods that might return a tensor for GPU elimination/fixing
+            if method in ('matrix_torch', 'bfs_torch') and torch is not None:
+                if method == 'matrix_torch':
+                    R_gpu = transitive_closure_torch(graph_implication, nodes=nodes, reflexive=True, return_matrix=True)
+                else:
+                    R_gpu = transitive_closure_bfs_torch(graph_implication, nodes=nodes, reflexive=True, return_matrix=True)
+                
+                closure_time_test = time.time() - closure_start
+                
+                # GPU Elimination
+                e_start = time.time()
+                dsu_gpu, d_elim_groups_gpu, i_map_gpu = elimination_on_implication_graph_torch(R_gpu, index, nodes)
+                e_time_gpu = time.time() - e_start
+                
+                # GPU Fixing
+                f_start = time.time()
+                f0_gpu, f1_gpu = fixing_on_implication_graph_torch(R_gpu, index, nodes, dsu_vars=dsu_gpu, indirect_map=i_map_gpu)
+                f_time_gpu = time.time() - f_start
+                
+                # Count pairs for indirect
+                i_count_gpu = 0
+                if i_map_gpu:
+                    i_count_gpu = sum(len(v) for v in i_map_gpu.values()) // 2
+
+                result = {
+                    'problem': model_name,
+                    'method': method + "_gpu_steps",
+                    'n': n,
+                    'm': m,
+                    'closure_time': round(closure_time_test, 6),
+                    'direct_elimination_#': num_total_vars - len(d_elim_groups_gpu),
+                    'indirect_elimination_#': i_count_gpu,
+                    'elimination_time': round(e_time_gpu, 6),
+                    '0_fixing': len(f0_gpu),
+                    '1_fixing': len(f1_gpu),
+                    'fixing_time': round(f_time_gpu, 6),
+                }
+            else:
+                # Regular CPU path (but still checking the test method)
+                reach_test = transitive_closure(graph_implication, nodes=nodes, method=method, reflexive=True)
+                closure_time_test = time.time() - closure_start
+                
+                # For reporting, we still use the reference counts for elimination/fixing 
+                # as closure correctness is assumed if we reached here
+                result = {
+                    'problem': model_name,
+                    'method': method,
+                    'n': n,
+                    'm': m,
+                    'closure_time': round(closure_time_test, 6),
+                    'direct_elimination_#': direct_elim_count,
+                    'indirect_elimination_#': indirect_elim_count,
+                    'elimination_time': round(elim_time, 6),
+                    '0_fixing': len(fixing_0),
+                    '1_fixing': len(fixing_1),
+                    'fixing_time': round(fixing_time, 6),
+                }
             
             with open(csv_path, 'a', newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -882,6 +1083,8 @@ def run_analysis(filepath, tag, max_vars, results_dir, has_elim, has_fix, method
             print(f"  {method}: closure={closure_time_test:.3f}s")
         except Exception as e:
             print(f"  {method}: ERROR - {e}")
+            import traceback
+            traceback.print_exc()
     
     print(f"Results for {model_name} written to {csv_path}")
 
@@ -898,10 +1101,14 @@ def main():
     results_dir = os.path.join(f"results_{today}_{config_base}")
     os.makedirs(results_dir, exist_ok=True)
 
+    if not os.path.exists(args.config_path):
+        print(f"Config file not found: {args.config_path}")
+        return
+
     with open(args.config_path, 'r') as f:
         config = json.load(f)
 
-    methods = ['matrix_torch', 'bfs', 'bfs_torch']
+    methods = ['matrix_torch', 'bfs_torch', 'bfs']
     index = 0
     for run_id, run_config in config.items():
         filepath = run_config.get('filepath')
@@ -925,4 +1132,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        

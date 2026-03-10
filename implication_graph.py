@@ -281,7 +281,7 @@ def transitive_closure_gpu(graph, nodes=None, reflexive=True, backend='cupy', re
     return out
 
 
-def transitive_closure_torch(graph, nodes=None, reflexive=True, device='cuda', return_matrix=False):
+def transitive_closure_torch(graph, nodes=None, reflexive=True, return_matrix=False):
     """
     GPU/CPU-accelerated transitive closure using PyTorch.
 
@@ -289,7 +289,6 @@ def transitive_closure_torch(graph, nodes=None, reflexive=True, device='cuda', r
     - graph: NetworkX DiGraph or adjacency mapping {node: iterable(neighbors)}
     - nodes: optional iterable of nodes (order defines matrix indices)
     - reflexive: include self-reachability
-    - device: 'cuda' (GPU) or 'cpu'. Will gracefully fallback to CPU if CUDA unavailable.
     - return_matrix: if True return the boolean matrix (torch.Tensor);
                      otherwise return dict mapping node->set(reachable nodes)
 
@@ -327,8 +326,11 @@ def transitive_closure_torch(graph, nodes=None, reflexive=True, device='cuda', r
     n = len(nodes)
     index = {node: i for i, node in enumerate(nodes)}
 
-    # Determine device: use CUDA if available and requested, else CPU
-    if device == 'cuda' and not torch.cuda.is_available():
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.xpu.is_available():
+        device = 'xpu'
+    else:
         device = 'cpu'
 
     print(f"Closure running on: {device}")
@@ -367,21 +369,18 @@ def transitive_closure_torch(graph, nodes=None, reflexive=True, device='cuda', r
     return out
 
 
-def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, device='cuda', return_matrix=False):
+def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, return_matrix=False):
     """GPU/CPU-accelerated BFS-style closure using PyTorch frontiers.
 
     This variant is most useful on sparse graphs where the "matrix" methods
     (which repeatedly square a reachability matrix) may generate a large
     intermediate dense matrix.  Instead we propagate a boolean frontier from
-    every source simultaneously using torch matrix operations.  The entire
-    computation happens on the selected ``device`` and falls back to CPU when
-    CUDA is not available.
+    every source simultaneously using torch matrix operations.
 
     Parameters
     - graph: NetworkX DiGraph or adjacency mapping {node: iterable(neighbors)}
     - nodes: optional iterable of nodes (order defines matrix indices)
     - reflexive: include self-reachability
-    - device: 'cuda' (GPU) or 'cpu'
     - return_matrix: if True return the boolean matrix (torch.Tensor)
 
     Returns
@@ -414,8 +413,11 @@ def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, device='cuda
     n = len(nodes)
     index = {node: i for i, node in enumerate(nodes)}
 
-    # determine device
-    if device == 'cuda' and not torch.cuda.is_available():
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.xpu.is_available():
+        device = 'xpu'
+    else:
         device = 'cpu'
 
     print(f"Closure running on: {device}")

@@ -18,7 +18,7 @@ try:
 except ImportError:
     torch = None
 
-# Helpers from existing modules
+# Helpers from existing modules (assumes workspace.md code is saved as implication_graph.py)
 from implication_graph import (
     create_conflict_graph,
     transitive_closure,
@@ -26,6 +26,8 @@ from implication_graph import (
     fixing_on_implication_graph,
     elimination_on_implication_graph_torch,
     fixing_on_implication_graph_torch,
+    elimination_on_implication_graph_gpu,
+    fixing_on_implication_graph_gpu,
     varname
 )
 from main_gurobi import apply_changes_to_model
@@ -50,9 +52,11 @@ def main():
     results_dir.mkdir(exist_ok=True)
     
     csv_path = results_dir / "batch_results.csv"
+    
+    # Added 'time_matrix_gpu' to the output fields
     fieldnames = [
         'problem', 'n', 'm', 
-        'time_matrix_torch', 'time_bfs', 'time_bfs_torch',
+        'time_matrix_gpu', 'time_bfs', 'time_matrix_torch', 'time_bfs_torch',
         'has_reductions', 'elim_time', 'fix_time',
         'direct_elim_#', 'indirect_elim_#', 'fixing_0_#', 'fixing_1_#',
         'config', 'solve_status', 'solve_time', 'nodes', 'obj_val', 'obj_bound'
@@ -63,7 +67,8 @@ def main():
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
 
-    methods = ['matrix_torch', 'bfs', 'bfs_torch']
+    # Define the methods you want to benchmark/run
+    methods = ['matrix_gpu', 'bfs'] #, 'matrix_torch', 'bfs_torch']
 
     for idx, filepath in enumerate(files, start=1):
         print(f"[{idx}/{len(files)}] Processing {filepath.name}")
@@ -101,9 +106,10 @@ def main():
                 try:
                     start_time = time.time()
                     is_torch = m_name in ('matrix_torch', 'bfs_torch') and torch is not None
+                    is_gpu_engine = m_name == 'matrix_gpu'
                     
                     if is_torch:
-                        # GPU pipeline: Closure -> Elim -> Fix (staying on GPU)
+                        # PyTorch GPU pipeline
                         R = transitive_closure(G, nodes=nodes, method=m_name, reflexive=True, return_matrix=True)
                         t_closure = time.time() - start_time
                         
@@ -114,8 +120,22 @@ def main():
                         t_fix_start = time.time()
                         f0, f1 = fixing_on_implication_graph_torch(R, index, nodes, dsu_vars=dsu_v, indirect_map=i_map)
                         t_fix = time.time() - t_fix_start
+
+                    elif is_gpu_engine:
+                        # CuPy/dpnp GPU Pipeline
+                        R = transitive_closure(G, nodes=nodes, method=m_name, reflexive=True, return_matrix=True)
+                        t_closure = time.time() - start_time
+                        
+                        t_elim_start = time.time()
+                        dsu_v, d_elim_groups, i_map = elimination_on_implication_graph_gpu(R, index, nodes)
+                        t_elim = time.time() - t_elim_start
+                        
+                        t_fix_start = time.time()
+                        f0, f1 = fixing_on_implication_graph_gpu(R, index, nodes, dsu_vars=dsu_v, indirect_map=i_map)
+                        t_fix = time.time() - t_fix_start
+
                     else:
-                        # CPU pipeline
+                        # CPU pipeline (BFS / Bitset)
                         reach_dict = transitive_closure(G, nodes=nodes, method=m_name, reflexive=True)
                         t_closure = time.time() - start_time
                         
@@ -129,12 +149,10 @@ def main():
 
                     method_times[f'time_{m_name}'] = round(t_closure, 6)
                     
-                    # Track reductions from the first successful method (usually matrix_torch)
+                    # Track reductions from the first successful method (prioritized by order in 'methods' list)
                     if best_reductions is None:
-                        # Calculate counts based on requirements
                         direct_count = num_total_vars - len(d_elim_groups)
                         indirect_count = sum(len(neighs) for neighs in i_map.values()) // 2
-                        
                         best_reductions = (f0, f1, d_elim_groups, i_map, t_elim, t_fix, direct_count, indirect_count)
 
                 except Exception as e:
@@ -161,7 +179,6 @@ def main():
             })
 
             # 3. Gurobi Solving Logic
-            # Build pairs for Gurobi application layer
             DE_pairs = [('1'+v1, '1'+v2) for group in direct_elim for i, v1 in enumerate(sorted(group)) for v2 in sorted(group)[i+1:]]
             IE_pairs = []
             seen_ie = set()

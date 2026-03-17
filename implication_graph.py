@@ -11,12 +11,99 @@ import json
 import argparse
 import numba
 from numba import jit
+import numpy as np
+from enum import Enum, auto
+from typing import Any, Dict, List, Optional, Tuple
 
 # Optional import for GPU acceleration
 try:
     import torch
 except ImportError:
     torch = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Backend Detection & Matrix Multiplication Engine
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Backend(Enum):
+    NVIDIA_CUDA = auto()
+    INTEL_GPU   = auto()
+    CPU_NUMPY   = auto()
+
+def _probe_nvidia() -> Tuple[bool, Any, Dict]:
+    try:
+        import cupy as cp
+    except ImportError:
+        return False, None, {"error": "CuPy not installed"}
+    try:
+        n = cp.cuda.runtime.getDeviceCount()
+        if n == 0:
+            return False, None, {"error": "No CUDA devices found"}
+        props = cp.cuda.runtime.getDeviceProperties(0)
+        return True, cp, {"name": props["name"].decode() if isinstance(props["name"], bytes) else props["name"]}
+    except Exception as e:
+        return False, None, {"error": str(e)}
+
+def _probe_intel() -> Tuple[bool, Any, Dict]:
+    try:
+        import dpnp as dp
+        import dpctl
+    except ImportError:
+        return False, None, {"error": "dpnp/dpctl not installed"}
+    try:
+        if not dpctl.has_gpu_devices():
+            return False, None, {"error": "No Intel GPU found"}
+        dev = dpctl.select_gpu_device()
+        return True, dp, {"name": getattr(dev, "name", "Intel GPU")}
+    except Exception as e:
+        return False, None, {"error": str(e)}
+
+def detect_backend() -> Tuple[Backend, Any]:
+    # Prioritize NVIDIA, then Intel, then CPU
+    ok, cp, _ = _probe_nvidia()
+    if ok: return Backend.NVIDIA_CUDA, cp
+    
+    ok, dp, _ = _probe_intel()
+    if ok: return Backend.INTEL_GPU, dp
+    
+    return Backend.CPU_NUMPY, np
+
+class GPUMatMul:
+    """Backend-agnostic matrix multiplication engine."""
+    def __init__(self) -> None:
+        self.backend, self.xp = detect_backend()
+
+    def to_device(self, arr: np.ndarray):
+        if self.backend == Backend.CPU_NUMPY:
+            return arr
+        if self.backend == Backend.NVIDIA_CUDA:
+            return self.xp.asarray(arr)
+        return self.xp.array(arr)
+
+    def to_host(self, arr) -> np.ndarray:
+        if self.backend == Backend.CPU_NUMPY:
+            return np.asarray(arr)
+        if self.backend == Backend.NVIDIA_CUDA:
+            return self.xp.asnumpy(arr)
+        return arr.asnumpy()
+
+    def sync(self) -> None:
+        if self.backend == Backend.NVIDIA_CUDA:
+            self.xp.cuda.Stream.null.synchronize()
+        elif self.backend == Backend.INTEL_GPU:
+            try:
+                import dpctl
+                dpctl.SyclQueue().wait()
+            except Exception: pass
+
+    def matmul(self, A, B):
+        return self.xp.matmul(A, B)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Core Graph Utilities
+# ══════════════════════════════════════════════════════════════════════════════
 
 def warshall_bitset(reach, n):
     """Warshall algorithm for bitset transitive closure."""
@@ -50,7 +137,6 @@ def create_conflict_graph(model: Model):
         g_conflict.add_node('1' + x.name)
         names.append(x.name)
         count+= 1
-
 
     for x in model.vars:
         # xi = 0
@@ -103,7 +189,7 @@ def transitive_closure(graph, nodes=None, method='auto', reflexive=True, return_
         adj_iter = lambda u: graph.successors(u) if hasattr(graph, 'successors') else graph.get(u, ())
 
     n = len(nodes)
-    index = {node: i for i, node in enumerate(nodes)}
+    index = {node: i for i, enumerate(nodes)}
     
     # Heuristic for method
     if method == 'auto':
@@ -113,8 +199,8 @@ def transitive_closure(graph, nodes=None, method='auto', reflexive=True, return_
         else: method = 'bfs'
 
     # Delegate to specialized implementations
-    if method == 'matrix':
-        return transitive_closure_gpu(graph, nodes=nodes, reflexive=reflexive, backend='numpy', return_matrix=return_matrix)
+    if method == 'matrix_gpu':
+        return transitive_closure_gpu(graph, nodes=nodes, reflexive=reflexive, return_matrix=return_matrix)
     elif method == 'matrix_torch':
         return transitive_closure_torch(graph, nodes=nodes, reflexive=reflexive, return_matrix=return_matrix)
     elif method in ('bfs_gpu', 'bfs_torch'):
@@ -184,27 +270,12 @@ def transitive_closure(graph, nodes=None, method='auto', reflexive=True, return_
         return out
 
 
-def transitive_closure_gpu(graph, nodes=None, reflexive=True, backend='cupy', return_matrix=False):
-    """
-    GPU-accelerated transitive closure using matrix multiplication on the boolean semiring.
+def transitive_closure_gpu(graph, nodes=None, reflexive=True, return_matrix=False):
+    """GPU-accelerated transitive closure using the integrated GPUMatMul engine."""
+    engine = GPUMatMul()
+    xp = engine.xp
+    print(f"Closure running on GPUMatMul Backend: {engine.backend.name}")
 
-    Parameters
-    - graph: NetworkX DiGraph or adjacency mapping {node: iterable(neighbors)}
-    - nodes: optional iterable of nodes (order defines matrix indices)
-    - reflexive: include self-reachability
-    - backend: 'cupy' (preferred) or 'numpy' (CPU fallback)
-    - return_matrix: if True return the boolean matrix (CuPy/Numpy array);
-                     otherwise return dict mapping node->set(reachable nodes)
-
-    Notes
-    - Requires CuPy for actual GPU acceleration. If CuPy is not available and
-      `backend=='cupy'` a RuntimeError is raised. You can set `backend='numpy'`
-      to run the same algorithm on CPU via NumPy.
-    - This approach builds an n x n boolean adjacency matrix and iteratively
-      applies boolean matrix multiplication until closure stabilizes. It is
-      most effective when `n` fits comfortably on the GPU memory.
-    """
-    # Normalize adjacency and nodes
     if nodes is None:
         if hasattr(graph, 'nodes') and hasattr(graph, 'successors'):
             nodes = list(graph.nodes)
@@ -226,18 +297,6 @@ def transitive_closure_gpu(graph, nodes=None, reflexive=True, backend='cupy', re
     n = len(nodes)
     index = {node: i for i, node in enumerate(nodes)}
 
-    # Choose backend
-    if backend == 'cupy':
-        try:
-            import cupy as cp
-            xp = cp
-        except Exception as e:
-            raise RuntimeError('CuPy backend requested but CuPy is not available: ' + str(e))
-    else:
-        import numpy as cp
-        xp = cp
-
-    # Build adjacency matrix (boolean), dtype=uint8 for multiplication
     A = xp.zeros((n, n), dtype=xp.uint8)
     for u in nodes:
         ui = index[u]
@@ -249,35 +308,29 @@ def transitive_closure_gpu(graph, nodes=None, reflexive=True, backend='cupy', re
         diag = xp.arange(n)
         A[diag, diag] = 1
 
-    # iterative multiplication until closure stabilizes
     reach = A.copy()
     while True:
-        prod = reach.dot(reach)
-        # boolean semiring: entry > 0 means there exists a path
+        # Cast to float32 to prevent integer overflow during the dot product summations
+        reach_f = reach.astype(xp.float32)
+        prod = engine.matmul(reach_f, reach_f)
+        
+        # Threshold back to 0/1
         prod_bool = (prod > 0).astype(xp.uint8)
         new = (reach | prod_bool)
-        # check convergence
+        
         if xp.array_equal(new, reach):
             break
         reach = new
-
+    
     if return_matrix:
         return reach
 
-    # Convert matrix to mapping node->set
+    # Convert to dict
     out = {}
-    if xp.__name__ == 'cupy':
-        # move to host in slices to avoid huge temporary if memory constrained
-        for i, u in enumerate(nodes):
-            row = xp.asnumpy(reach[i])
-            inds = (row > 0).nonzero()[0]
-            out[u] = {nodes[j] for j in inds}
-    else:
-        for i, u in enumerate(nodes):
-            row = reach[i]
-            inds = (row > 0).nonzero()[0]
-            out[u] = {nodes[j] for j in inds}
-
+    reach_cpu = engine.to_host(reach)
+    for i, u in enumerate(nodes):
+        inds = reach_cpu[i].nonzero()[0]
+        out[u] = {nodes[j] for j in inds}
     return out
 
 
@@ -333,7 +386,7 @@ def transitive_closure_torch(graph, nodes=None, reflexive=True, return_matrix=Fa
     else:
         device = 'cpu'
 
-    print(f"Closure running on: {device}")
+    print(f"Closure running on Torch: {device}")
     # Build adjacency matrix as boolean tensor
     A = torch.zeros((n, n), dtype=torch.uint8, device=device)
     for u in nodes:
@@ -420,7 +473,7 @@ def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, return_matri
     else:
         device = 'cpu'
 
-    print(f"Closure running on: {device}")
+    print(f"Closure running on Torch BFS: {device}")
     # build boolean adjacency matrix
     A = torch.zeros((n, n), dtype=torch.bool, device=device)
     for u in nodes:
@@ -457,6 +510,7 @@ def transitive_closure_bfs_torch(graph, nodes=None, reflexive=True, return_matri
         inds = (vis_cpu[i] > 0).nonzero()[0]
         out[u] = {nodes[j] for j in inds}
     return out
+
 
 class DisjointSetUnion:
     """Simple DSU (Union-Find) data structure for grouping nodes."""
@@ -672,6 +726,74 @@ def elimination_on_implication_graph_torch(R, index, nodes):
             if i == j: continue
             v_b = all_vars[j]
             if var_to_root[v_a] == var_to_root[v_b]: continue # Skip if already directly equivalent
+            
+            idx_b1 = var_to_indices[v_b][1]
+            if idx_b1 is None: continue
+            
+            if M_cpu[idx_a0, idx_b1]:
+                if v_a not in indirect_map: indirect_map[v_a] = []
+                if v_b not in indirect_map: indirect_map[v_b] = []
+                indirect_map[v_a].append(v_b)
+                indirect_map[v_b].append(v_a)
+                
+    return dsu_vars, direct_eliminations, indirect_map
+
+
+def elimination_on_implication_graph_gpu(R, index, nodes):
+    """
+    GPUMatMul-accelerated elimination using mutual reachability.
+    Mirror of the Torch logic, optimized for CuPy/dpnp/Numpy.
+    """
+    engine = GPUMatMul()
+    
+    # M[a][b] == 1 iff a reaches b AND b reaches a (mutual reachability)
+    M = (R > 0) & (R.T > 0)
+    M_cpu = engine.to_host(M)
+    
+    # Extract var names and find node indices
+    node_vars = [varname(n) for n in nodes]
+    node_stats = [stat(n) for n in nodes]
+    
+    all_vars = sorted(list(set(node_vars)))
+    dsu_vars = DisjointSetUnion(all_vars)
+    
+    # Var mapping to indices in nodes list
+    var_to_indices = {}
+    for i, v in enumerate(node_vars):
+        if v not in var_to_indices: var_to_indices[v] = [None, None]
+        var_to_indices[v][node_stats[i]] = i
+
+    # Direct Elimination: 0x <-> 0y
+    for i in range(len(all_vars)):
+        v_a = all_vars[i]
+        idx_a0 = var_to_indices[v_a][0]
+        if idx_a0 is None: continue
+        
+        for j in range(i + 1, len(all_vars)):
+            v_b = all_vars[j]
+            idx_b0 = var_to_indices[v_b][0]
+            if idx_b0 is None: continue
+            
+            if M_cpu[idx_a0, idx_b0]:
+                dsu_vars.union(v_a, v_b)
+                
+    final_groups = dsu_vars.groups()
+    direct_eliminations = [set(group) for group in final_groups.values() if group]
+    
+    # Var to group mapping for indirect skip
+    var_to_root = {v: dsu_vars.find(v) for v in all_vars}
+    
+    # Indirect Elimination: 0x <-> 1y
+    indirect_map = {}
+    for i in range(len(all_vars)):
+        v_a = all_vars[i]
+        idx_a0 = var_to_indices[v_a][0]
+        if idx_a0 is None: continue
+        
+        for j in range(len(all_vars)):
+            if i == j: continue
+            v_b = all_vars[j]
+            if var_to_root[v_a] == var_to_root[v_b]: continue
             
             idx_b1 = var_to_indices[v_b][1]
             if idx_b1 is None: continue
@@ -916,6 +1038,89 @@ def fixing_on_implication_graph_torch(R, index, nodes, dsu_vars=None, indirect_m
     return fixing_0, fixing_1
 
 
+def fixing_on_implication_graph_gpu(R, index, nodes, dsu_vars=None, indirect_map=None):
+    """
+    GPUMatMul-accelerated fixing. 
+    Mirror of Torch logic, optimized for CuPy/dpnp/Numpy via GPUMatMul.
+    """
+    engine = GPUMatMul()
+    xp = engine.xp
+    
+    n = len(nodes)
+    node_vars = [varname(n) for n in nodes]
+    node_stats = [stat(n) for n in nodes]
+    all_vars = sorted(list(set(node_vars)))
+    
+    # Map variable names to literal indices
+    var_to_indices = {}
+    for i, v in enumerate(node_vars):
+        if v not in var_to_indices: var_to_indices[v] = [None, None]
+        var_to_indices[v][node_stats[i]] = i
+        
+    # Vectors for Method 1 & 2
+    idx_0 = []
+    idx_1 = []
+    valid_vars = []
+    for v in all_vars:
+        i0, i1 = var_to_indices[v]
+        if i0 is not None and i1 is not None:
+            idx_0.append(i0)
+            idx_1.append(i1)
+            valid_vars.append(v)
+            
+    if not idx_0: return set(), set()
+    
+    idx_0 = xp.array(idx_0)
+    idx_1 = xp.array(idx_1)
+    
+    direct_0_vec = R[idx_1, idx_0] > 0
+    direct_1_vec = R[idx_0, idx_1] > 0
+    
+    # Use the safe float conversion for checking combinations
+    R_even = R[idx_0, :].astype(xp.float32)
+    R_odd = R[idx_1, :].astype(xp.float32)
+    P = (R_even > 0) & (R_odd > 0)
+    
+    # Any axis 0 checks if ANY property across the rows holds true
+    forced_mask = P.any(axis=0)
+    
+    forced_0_vec = forced_mask[idx_0] | direct_0_vec
+    forced_1_vec = forced_mask[idx_1] | direct_1_vec
+    
+    forced_0_cpu = engine.to_host(forced_0_vec)
+    forced_1_cpu = engine.to_host(forced_1_vec)
+    
+    fixing_0 = {valid_vars[i] for i, f in enumerate(forced_0_cpu) if f}
+    fixing_1 = {valid_vars[i] for i, f in enumerate(forced_1_cpu) if f}
+    
+    # Propagate through eliminations (CPU logic)
+    if dsu_vars or indirect_map:
+        var_to_group = {}
+        if dsu_vars:
+            groups = dsu_vars.groups()
+            for root, members in groups.items():
+                for m in members: var_to_group[m] = root
+        
+        new_f0 = set(fixing_0)
+        new_f1 = set(fixing_1)
+        
+        for v in fixing_0:
+            if dsu_vars and v in var_to_group:
+                for m in dsu_vars.groups()[var_to_group[v]]: new_f0.add(m)
+            if indirect_map and v in indirect_map:
+                for m in indirect_map[v]: new_f1.add(m)
+        
+        for v in fixing_1:
+            if dsu_vars and v in var_to_group:
+                for m in dsu_vars.groups()[var_to_group[v]]: new_f1.add(m)
+            if indirect_map and v in indirect_map:
+                for m in indirect_map[v]: new_f0.add(m)
+                
+        return new_f0, new_f1
+
+    return fixing_0, fixing_1
+
+
 def run_analysis(filepath, tag, max_vars, results_dir, has_elim, has_fix, methods):
     """Run analysis with multiple closure methods, but elimination/fixing only once.
     
@@ -994,23 +1199,34 @@ def run_analysis(filepath, tag, max_vars, results_dir, has_elim, has_fix, method
     for method in methods:
         closure_start = time.time()
         try:
-            # Handle methods that might return a tensor for GPU elimination/fixing
-            if method in ('matrix_torch', 'bfs_torch') and torch is not None:
-                if method == 'matrix_torch':
+            # Handle methods that might return a tensor/array for GPU elimination/fixing
+            if method in ('matrix_torch', 'bfs_torch', 'matrix_gpu'):
+                if method == 'matrix_torch' and torch is not None:
                     R_gpu = transitive_closure_torch(graph_implication, nodes=nodes, reflexive=True, return_matrix=True)
-                else:
+                elif method == 'bfs_torch' and torch is not None:
                     R_gpu = transitive_closure_bfs_torch(graph_implication, nodes=nodes, reflexive=True, return_matrix=True)
+                elif method == 'matrix_gpu':
+                    R_gpu = transitive_closure_gpu(graph_implication, nodes=nodes, reflexive=True, return_matrix=True)
+                else:
+                    print(f"  {method}: Skipped (framework missing)")
+                    continue
                 
                 closure_time_test = time.time() - closure_start
                 
-                # GPU Elimination
+                # GPU Elimination Check
                 e_start = time.time()
-                dsu_gpu, d_elim_groups_gpu, i_map_gpu = elimination_on_implication_graph_torch(R_gpu, index, nodes)
+                if 'torch' in method:
+                    dsu_gpu, d_elim_groups_gpu, i_map_gpu = elimination_on_implication_graph_torch(R_gpu, index, nodes)
+                else:
+                    dsu_gpu, d_elim_groups_gpu, i_map_gpu = elimination_on_implication_graph_gpu(R_gpu, index, nodes)
                 e_time_gpu = time.time() - e_start
                 
-                # GPU Fixing
+                # GPU Fixing Check
                 f_start = time.time()
-                f0_gpu, f1_gpu = fixing_on_implication_graph_torch(R_gpu, index, nodes, dsu_vars=dsu_gpu, indirect_map=i_map_gpu)
+                if 'torch' in method:
+                    f0_gpu, f1_gpu = fixing_on_implication_graph_torch(R_gpu, index, nodes, dsu_vars=dsu_gpu, indirect_map=i_map_gpu)
+                else:
+                    f0_gpu, f1_gpu = fixing_on_implication_graph_gpu(R_gpu, index, nodes, dsu_vars=dsu_gpu, indirect_map=i_map_gpu)
                 f_time_gpu = time.time() - f_start
                 
                 # Count pairs for indirect
@@ -1087,7 +1303,8 @@ def main():
     with open(args.config_path, 'r') as f:
         config = json.load(f)
 
-    methods = ['matrix_torch', 'bfs_torch', 'bfs']
+    # Added matrix_gpu so it can be benchmarked against the other methods!
+    methods = ['matrix_torch', 'bfs_torch', 'matrix_gpu', 'bfs']
     index = 0
     for run_id, run_config in config.items():
         filepath = run_config.get('filepath')

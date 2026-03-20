@@ -189,7 +189,7 @@ def transitive_closure(graph, nodes=None, method='auto', reflexive=True, return_
         adj_iter = lambda u: graph.successors(u) if hasattr(graph, 'successors') else graph.get(u, ())
 
     n = len(nodes)
-    index = {node: i for i, enumerate(nodes)}
+    index = {node: i for i, node in enumerate(nodes)}
     
     # Heuristic for method
     if method == 'auto':
@@ -806,6 +806,63 @@ def elimination_on_implication_graph_gpu(R, index, nodes):
                 
     return dsu_vars, direct_eliminations, indirect_map
 
+def elimination_on_implication_graph_numpy(reach_matrix, index, nodes):
+    """Optimized CPU elimination using NumPy vectorization."""
+    if len(nodes) == 0:
+        return None, [], {}
+        
+    # 1. Compute mutual reachability matrix instantly (assuming reach_matrix is boolean)
+    # If reach_matrix is int (0/1), use: M = (reach_matrix > 0) & (reach_matrix.T > 0)
+    M = reach_matrix & reach_matrix.T  
+    
+    # 2. Extract metadata into fast NumPy arrays
+    node_vars = np.array([varname(n) for n in nodes])
+    node_stats = np.array([stat(n) for n in nodes])
+    
+    all_vars = np.unique(node_vars)
+    dsu_vars = DisjointSetUnion(all_vars)
+    
+    # 3. Get indices for stat=0 and stat=1 nodes
+    idx_0 = np.where(node_stats == 0)[0]
+    idx_1 = np.where(node_stats == 1)[0]
+    
+    # --- DIRECT ELIMINATION (0x <-> 0y) ---
+    # Slice M to only look at intersections of stat=0 nodes
+    M_00 = M[np.ix_(idx_0, idx_0)]
+    
+    # Get all (row, col) coordinates where M_00 is True
+    # np.triu avoids checking both (a,b) and (b,a), and k=1 skips the diagonal (a,a)
+    rows_00, cols_00 = np.where(np.triu(M_00, k=1))
+    
+    for r, c in zip(rows_00, cols_00):
+        v_a, v_b = node_vars[idx_0[r]], node_vars[idx_0[c]]
+        dsu_vars.union(v_a, v_b)
+            
+    final_groups = dsu_vars.groups()
+    direct_eliminations = [set(g) for g in final_groups.values() if g]
+    
+    # --- INDIRECT ELIMINATION (0x <-> 1y) ---
+    var_to_root = {v: dsu_vars.find(v) for v in all_vars}
+    indirect_map = {}
+    
+    # Slice M to look at stat=0 against stat=1
+    M_01 = M[np.ix_(idx_0, idx_1)]
+    rows_01, cols_01 = np.where(M_01)
+    
+    for r, c in zip(rows_01, cols_01):
+        v_a, v_b = node_vars[idx_0[r]], node_vars[idx_1[c]]
+        
+        # Skip if already directly equivalent
+        if var_to_root[v_a] != var_to_root[v_b]:
+            if v_a not in indirect_map: indirect_map[v_a] = []
+            if v_b not in indirect_map: indirect_map[v_b] = []
+            
+            # Avoid duplicates if multiple nodes map to same var
+            if v_b not in indirect_map[v_a]:
+                indirect_map[v_a].append(v_b)
+                indirect_map[v_b].append(v_a)
+                
+    return dsu_vars, direct_eliminations, indirect_map
 
 def fixing_on_implication_graph(graph, dsu_vars=None, indirect_map=None, reach_bitsets=None, reach_matrix=None, index=None):
     """
@@ -1115,6 +1172,93 @@ def fixing_on_implication_graph_gpu(R, index, nodes, dsu_vars=None, indirect_map
                 for m in dsu_vars.groups()[var_to_group[v]]: new_f1.add(m)
             if indirect_map and v in indirect_map:
                 for m in indirect_map[v]: new_f0.add(m)
+                
+        return new_f0, new_f1
+
+    return fixing_0, fixing_1
+
+def fixing_on_implication_graph_numpy(reach_matrix, index, nodes, dsu_vars=None, indirect_map=None):
+    """
+    Optimized CPU variable fixing using NumPy vectorization.
+    Matches the logic of the GPU versions but runs natively on CPU.
+    """
+    if not nodes:
+        return set(), set()
+    
+    # Extract metadata into NumPy arrays
+    node_vars = np.array([varname(n) for n in nodes])
+    node_stats = np.array([stat(n) for n in nodes])
+    all_vars = np.unique(node_vars)
+    
+    # Map variable names to literal indices
+    var_to_idx = {v: [None, None] for v in all_vars}
+    for i, (v, s) in enumerate(zip(node_vars, node_stats)):
+        var_to_idx[v][s] = i
+        
+    idx_0, idx_1, valid_vars = [], [], []
+    for v in all_vars:
+        i0, i1 = var_to_idx[v]
+        if i0 is not None and i1 is not None:
+            idx_0.append(i0)
+            idx_1.append(i1)
+            valid_vars.append(v)
+            
+    if not idx_0: 
+        return set(), set()
+        
+    idx_0 = np.array(idx_0)
+    idx_1 = np.array(idx_1)
+    valid_vars = np.array(valid_vars)
+    
+    # --- 1. Direct 2-SAT fixing ---
+    # x=1 reaches x=0 => fix to 0
+    # x=0 reaches x=1 => fix to 1
+    direct_0_vec = reach_matrix[idx_1, idx_0] > 0
+    direct_1_vec = reach_matrix[idx_0, idx_1] > 0
+    
+    # --- 2. Complementary-Pair AND (Global reachability check) ---
+    # Node t is forced if there exists some variable y such that both y=0 and y=1 reach t
+    R_0 = reach_matrix[idx_0, :]
+    R_1 = reach_matrix[idx_1, :]
+    
+    # P[i, j] is True if BOTH 0x_i and 1x_i reach node j
+    P = (R_0 > 0) & (R_1 > 0)
+    
+    # .any(axis=0) collapses the rows, returning True for any column (node) 
+    # that is reached by BOTH states of at least one variable.
+    forced_mask = P.any(axis=0)
+    
+    # Combine direct fixes with complementary-pair fixes
+    forced_0_vec = forced_mask[idx_0] | direct_0_vec
+    forced_1_vec = forced_mask[idx_1] | direct_1_vec
+    
+    # Extract the variable names that were flagged True
+    fixing_0 = set(valid_vars[forced_0_vec])
+    fixing_1 = set(valid_vars[forced_1_vec])
+    
+    # --- 3. Propagate through eliminations ---
+    if dsu_vars or indirect_map:
+        var_to_group = {}
+        if dsu_vars:
+            for root, members in dsu_vars.groups().items():
+                for m in members: 
+                    var_to_group[m] = root
+        
+        new_f0, new_f1 = set(fixing_0), set(fixing_1)
+        
+        # Propagate from 0-fixes
+        for v in fixing_0:
+            if dsu_vars and v in var_to_group:
+                new_f0.update(dsu_vars.groups()[var_to_group[v]])
+            if indirect_map and v in indirect_map:
+                new_f1.update(indirect_map[v])
+        
+        # Propagate from 1-fixes
+        for v in fixing_1:
+            if dsu_vars and v in var_to_group:
+                new_f1.update(dsu_vars.groups()[var_to_group[v]])
+            if indirect_map and v in indirect_map:
+                new_f0.update(indirect_map[v])
                 
         return new_f0, new_f1
 

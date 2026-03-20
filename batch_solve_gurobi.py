@@ -21,6 +21,8 @@ except ImportError:
 # Helpers from existing modules (assumes workspace.md code is saved as implication_graph.py)
 from implication_graph import (
     create_conflict_graph,
+    elimination_on_implication_graph_numpy,
+    fixing_on_implication_graph_numpy,
     transitive_closure,
     elimination_on_implication_graph,
     fixing_on_implication_graph,
@@ -38,7 +40,7 @@ def find_problem_files(root: Path) -> list[Path]:
 def main():
     parser = argparse.ArgumentParser(description="Batch resilient Gurobi analysis with GPU-accelerated reductions.")
     parser.add_argument("--problems_dir", type=str, default="problems", help="Directory containing .mps files.")
-    parser.add_argument("--max_vars", type=int, default=100000, help="Maximum number of variables allowed.")
+    parser.add_argument("--max_vars", type=int, default=500000, help="Maximum number of variables allowed.")
     args = parser.parse_args()
 
     problems_root = Path(args.problems_dir)
@@ -68,7 +70,7 @@ def main():
         writer.writeheader()
 
     # Define the methods you want to benchmark/run
-    methods = ['matrix_gpu', 'bfs'] #, 'matrix_torch', 'bfs_torch']
+    methods = ['bfs'] #, 'matrix_torch', 'bfs_torch']
 
     for idx, filepath in enumerate(files, start=1):
         print(f"[{idx}/{len(files)}] Processing {filepath.name}")
@@ -135,16 +137,28 @@ def main():
                         t_fix = time.time() - t_fix_start
 
                     else:
-                        # CPU pipeline (BFS / Bitset)
-                        reach_dict = transitive_closure(G, nodes=nodes, method=m_name, reflexive=True)
-                        t_closure = time.time() - start_time
-                        
+                        # CPU pipeline (NumPy Matrix)
+                        t_closure_start = time.time()
+                        # Make sure this returns a dense 2D numpy array, not a dict of bitsets!
+                        reach_mat = transitive_closure(G, nodes=nodes, method=m_name, reflexive=True, return_matrix=True)
+                        t_closure = time.time() - t_closure_start
+
                         t_elim_start = time.time()
-                        dsu_v, d_elim_groups, i_map = elimination_on_implication_graph(G, reach_bitsets=reach_dict, index=index)
+                        dsu_v, d_elim_groups, i_map = elimination_on_implication_graph_numpy(
+                            reach_matrix=reach_mat, 
+                            index=index,   # Optional depending on how we wrote it, but good to pass
+                            nodes=nodes    # CRITICAL: This list must match the row/col order of reach_mat
+                        )
                         t_elim = time.time() - t_elim_start
-                        
+
                         t_fix_start = time.time()
-                        f0, f1 = fixing_on_implication_graph(G, dsu_vars=dsu_v, indirect_map=i_map, reach_bitsets=reach_dict, index=index)
+                        f0, f1 = fixing_on_implication_graph_numpy(
+                            reach_matrix=reach_mat, 
+                            index=index, 
+                            nodes=nodes, 
+                            dsu_vars=dsu_v, 
+                            indirect_map=i_map
+                        )
                         t_fix = time.time() - t_fix_start
 
                     method_times[f'time_{m_name}'] = round(t_closure, 6)

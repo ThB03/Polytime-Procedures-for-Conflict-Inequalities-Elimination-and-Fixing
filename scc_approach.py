@@ -2,7 +2,8 @@ import os
 import time
 import csv
 import argparse
-import gc
+import multiprocessing as mp
+import queue
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -10,58 +11,9 @@ from typing import Dict, List, Set, Tuple
 
 import numpy as np
 import gurobipy as gp
-from mip import Model, MINIMIZE, CBC, ConflictGraph
 
 # Import the model application helper
 from main_gurobi import apply_changes_to_model
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Graph Generation (No NetworkX)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def create_implication_graph(model: Model) -> Tuple[Dict[str, List[str]], List[str], int, int]:
-    """
-    Builds the implication graph natively using python dictionaries.
-    Completely bypasses NetworkX to prevent massive memory overhead.
-    """
-    cg = ConflictGraph(model)
-    adj = defaultdict(list)
-    nodes = []
-    m_edges = 0
-
-    # Initialize nodes array to ensure we capture disconnected variables too
-    for x in model.vars:
-        nodes.append('0' + x.name)
-        nodes.append('1' + x.name)
-
-    for x in model.vars:
-        x_name = x.name
-        
-        # xi = 0
-        z = cg.conflicting_assignments(x == 0)
-        for y in z[0]:
-            adj['0' + x_name].append('0' + y.name)
-            adj['1' + y.name].append('1' + x_name)
-            m_edges += 2
-            
-        for y in z[1]:
-            adj['0' + x_name].append('1' + y.name)
-            adj['0' + y.name].append('1' + x_name)
-            m_edges += 2
-
-        # xi = 1
-        o = cg.conflicting_assignments(x)
-        for y in o[0]:
-            adj['1' + x_name].append('0' + y.name)
-            adj['1' + y.name].append('0' + x_name)
-            m_edges += 2
-            
-        for y in o[1]:
-            adj['1' + x_name].append('1' + y.name)
-            adj['0' + y.name].append('0' + x_name)
-            m_edges += 2
-
-    return adj, nodes, len(nodes), m_edges
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Helper Utilities
@@ -98,19 +50,46 @@ class DisjointSetUnion:
             groups_dict[self.find(e)].append(e)
         return groups_dict
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  Graph Generation & Reductions (Now safe to run in a Worker Process)
+# ══════════════════════════════════════════════════════════════════════════════
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Core SCC Graph Processing (Native Python, ZERO NetworkX)
-# ══════════════════════════════════════════════════════════════════════════════
+def create_implication_graph(model) -> Tuple[Dict[str, List[str]], List[str], int, int]:
+    from mip import ConflictGraph
+    cg = ConflictGraph(model)
+    adj = defaultdict(list)
+    nodes = []
+    m_edges = 0
+
+    for x in model.vars:
+        nodes.append('0' + x.name)
+        nodes.append('1' + x.name)
+
+    for x in model.vars:
+        x_name = x.name
+        z = cg.conflicting_assignments(x == 0)
+        for y in z[0]:
+            adj['0' + x_name].append('0' + y.name)
+            adj['1' + y.name].append('1' + x_name)
+            m_edges += 2
+        for y in z[1]:
+            adj['0' + x_name].append('1' + y.name)
+            adj['0' + y.name].append('1' + x_name)
+            m_edges += 2
+
+        o = cg.conflicting_assignments(x)
+        for y in o[0]:
+            adj['1' + x_name].append('0' + y.name)
+            adj['1' + y.name].append('0' + x_name)
+            m_edges += 2
+        for y in o[1]:
+            adj['1' + x_name].append('1' + y.name)
+            adj['0' + y.name].append('0' + x_name)
+            m_edges += 2
+
+    return adj, nodes, len(nodes), m_edges
 
 def build_scc_structures(adj: Dict[str, List[str]], nodes: List[str]):
-    """
-    Finds SCCs and builds the condensed DAG using an Iterative Tarjan's Algorithm.
-    Operates strictly on native dictionaries and lists for maximum memory efficiency.
-    """
-    
-    # 1. ITERATIVE TARJAN'S ALGORITHM
-    # (Iterative prevents 'RecursionError' on massive graphs of 100k+ vars)
     index = 0
     indices = {}
     lowlink = {}
@@ -131,28 +110,24 @@ def build_scc_structures(adj: Dict[str, List[str]], nodes: List[str]):
                 curr, edge_idx = call_stack[-1]
                 neighbors = adj.get(curr, [])
 
-                # If there are still neighbors to visit for the current node
                 if edge_idx < len(neighbors):
                     w = neighbors[edge_idx]
-                    call_stack[-1] = (curr, edge_idx + 1) # Advance pointer for next time
-                    
+                    call_stack[-1] = (curr, edge_idx + 1)
                     if w not in indices:
                         indices[w] = index
                         lowlink[w] = index
                         index += 1
                         stack.append(w)
                         on_stack.add(w)
-                        call_stack.append((w, 0)) # "Recurse" into w
+                        call_stack.append((w, 0))
                     elif w in on_stack:
                         lowlink[curr] = min(lowlink[curr], indices[w])
                 else:
-                    # Finished all neighbors, time to pop from call stack
                     call_stack.pop()
                     if call_stack:
                         prev, _ = call_stack[-1]
                         lowlink[prev] = min(lowlink[prev], lowlink[curr])
 
-                    # If curr is the root of an SCC
                     if lowlink[curr] == indices[curr]:
                         scc = []
                         while True:
@@ -164,19 +139,11 @@ def build_scc_structures(adj: Dict[str, List[str]], nodes: List[str]):
                         sccs.append(scc)
 
     num_sccs = len(sccs)
-
-    # 2. MAP NODES TO SCCs
     node_to_scc = {}
-    # AMAZING TRICK: Tarjan's outputs SCCs in Reverse Topological Order!
-    # The first SCC found is guaranteed to be a "sink" (leaf).
     for scc_id, scc_nodes in enumerate(sccs):
         for node in scc_nodes:
             node_to_scc[node] = scc_id
             
-    # Free memory instantly
-    del sccs 
-            
-    # Map variable strings back to their states
     var_to_scc = {}
     all_vars_set = set()
     for node in nodes:
@@ -188,8 +155,6 @@ def build_scc_structures(adj: Dict[str, List[str]], nodes: List[str]):
         var_to_scc[var][st] = node_to_scc[node]
     all_vars = sorted(list(all_vars_set))
 
-    # 3. BUILD CONDENSED DAG
-    # Using sets to prevent duplicate edges between SCCs, then converting to lists
     dag_adj_sets = [set() for _ in range(num_sccs)]
     for u, neighbors in adj.items():
         scc_u = node_to_scc[u]
@@ -199,21 +164,9 @@ def build_scc_structures(adj: Dict[str, List[str]], nodes: List[str]):
                 dag_adj_sets[scc_u].add(scc_v)
 
     dag_adj = [list(edges) for edges in dag_adj_sets]
-    
-    del node_to_scc
-    del dag_adj_sets
-    
-    # Because Tarjan's spits out leaves first and roots last,
-    # the SCC IDs (0, 1, 2...) are ALREADY exactly the reverse topological sort!
     reversed_topo = list(range(num_sccs))
 
     return var_to_scc, all_vars, num_sccs, reversed_topo, dag_adj
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Elimination
-# ══════════════════════════════════════════════════════════════════════════════
-# (No changes needed here)
 
 def elimination_on_implication_graph_scc(all_vars: List[str], var_to_scc: Dict[str, List[int]]):
     dsu_vars = DisjointSetUnion(all_vars)
@@ -223,13 +176,8 @@ def elimination_on_implication_graph_scc(all_vars: List[str], var_to_scc: Dict[s
     
     for v in all_vars:
         scc_0, scc_1 = var_to_scc[v]
-        if scc_0 is None or scc_1 is None:
+        if scc_0 is None or scc_1 is None or scc_0 == scc_1:
             continue
-            
-        if scc_0 == scc_1:
-            print(f"WARNING: Variable {v} is infeasible (0{v} <=> 1{v}).")
-            continue
-            
         scc_to_0_vars[scc_0].append(v)
         scc_to_1_vars[scc_1].append(v)
 
@@ -255,16 +203,9 @@ def elimination_on_implication_graph_scc(all_vars: List[str], var_to_scc: Dict[s
     indirect_map = {k: list(v) for k, v in indirect_map_internal.items()}
     return dsu_vars, direct_eliminations, indirect_map
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Fixing 
-# ══════════════════════════════════════════════════════════════════════════════
-# (No changes needed here)
-
 def fixing_on_implication_graph_scc(all_vars: List[str], var_to_scc: Dict[str, List[int]], 
                                     num_sccs: int, reversed_topo: List[int], 
                                     adj: List[List[int]]):
-    
     num_words = (num_sccs + 63) // 64
     reach = np.zeros((num_sccs, num_words), dtype=np.uint64)
     
@@ -282,7 +223,6 @@ def fixing_on_implication_graph_scc(all_vars: List[str], var_to_scc: Dict[str, L
     
     for v in all_vars:
         scc_0, scc_1 = var_to_scc[v]
-        
         if scc_0 is None or scc_1 is None:
             continue
             
@@ -299,9 +239,74 @@ def fixing_on_implication_graph_scc(all_vars: List[str], var_to_scc: Dict[str, L
             
     return fixing_0, fixing_1
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  Worker Process (Isolated Memory Environment)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def preprocess_worker(filepath_str: str, result_queue: mp.Queue, max_vars: int):
+    """
+    This entire function runs in a completely separate Windows process.
+    If it hits a MemoryError and crashes, the main python script survives!
+    """
+    try:
+        from mip import Model, MINIMIZE, CBC
+        mip_model = Model(sense=MINIMIZE, solver_name=CBC)
+        mip_model.read(filepath_str)
+        
+        n_vars = len(mip_model.vars)
+        if n_vars > max_vars:
+            result_queue.put({"status": "skipped", "reason": "SKIPPED_MAX_VARS", "n_vars": n_vars})
+            return
+
+        adj_dict, nodes, n_nodes, m_edges = create_implication_graph(mip_model)
+        
+        t_scc_start = time.time()
+        var_to_scc, all_vars, num_sccs, reversed_topo, adj = build_scc_structures(adj_dict, nodes)
+        t_scc = time.time() - t_scc_start
+        
+        t_elim_start = time.time()
+        dsu_v, d_elim_groups, i_map = elimination_on_implication_graph_scc(all_vars, var_to_scc)
+        t_elim = time.time() - t_elim_start
+        
+        t_fix_start = time.time()
+        f0, f1 = fixing_on_implication_graph_scc(all_vars, var_to_scc, num_sccs, reversed_topo, adj)
+        t_fix = time.time() - t_fix_start
+
+        d_count = sum(len(g) - 1 for g in d_elim_groups)
+        i_count = sum(len(neighs) for neighs in i_map.values()) // 2
+        has_reductions = (d_count > 0 or i_count > 0 or len(f0) > 0 or len(f1) > 0)
+        
+        DE_pairs = [
+            ('1'+v1, '1'+v2) 
+            for group in d_elim_groups 
+            for i, v1 in enumerate(sorted(group)) 
+            for v2 in sorted(group)[i+1:]
+        ]
+        
+        IE_pairs = []
+        seen_ie = set()
+        for a, ns in i_map.items():
+            for b in ns:
+                pair = tuple(sorted(('1'+a, '1'+b)))
+                if pair not in seen_ie:
+                    seen_ie.add(pair)
+                    IE_pairs.append(pair)
+
+        # Send the calculated results back to the main script!
+        result_queue.put({
+            "status": "success",
+            "n_vars": n_vars, "n_nodes": n_nodes, "m_edges": m_edges, "num_sccs": num_sccs,
+            "t_scc": t_scc, "t_elim": t_elim, "t_fix": t_fix,
+            "d_count": d_count, "i_count": i_count,
+            "has_reductions": has_reductions,
+            "f0": f0, "f1": f1, "DE_pairs": DE_pairs, "IE_pairs": IE_pairs
+        })
+
+    except Exception as e:
+        result_queue.put({"status": "error", "message": str(e)})
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Batch Solving Pipeline
+#  Main Batch Pipeline
 # ══════════════════════════════════════════════════════════════════════════════
 
 def find_problem_files(root: Path) -> list[Path]:
@@ -311,6 +316,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--problems_dir", type=str, default="problems")
     parser.add_argument("--max_vars", type=int, default=100000)
+    parser.add_argument("--timeout_prep", type=int, default=3600, help="Max seconds for preprocessing.")
     args = parser.parse_args()
 
     problems_root = Path(args.problems_dir)
@@ -320,7 +326,6 @@ def main():
 
     files = find_problem_files(problems_root)
     
-    # Check for toSkip.txt and load instances to skip
     skip_set = set()
     skip_file_path = Path("toSkip.txt")
     if skip_file_path.exists():
@@ -348,6 +353,9 @@ def main():
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
 
+    # Must use 'spawn' to be safe on Windows
+    ctx = mp.get_context('spawn')
+
     for idx, filepath in enumerate(files, start=1):
         if filepath.name in skip_set:
             print(f"[{idx}/{len(files)}] Skipping {filepath.name} (found in toSkip.txt)")
@@ -358,175 +366,129 @@ def main():
         problem_info = {k: "N/A" for k in fieldnames}
         problem_info['problem'] = filepath.name
 
-        try:
-            mip_model = Model(sense=MINIMIZE, solver_name=CBC)
-            mip_model.read(str(filepath))
-            
-            n_vars = len(mip_model.vars)
-            print(f"  Variables: {n_vars}")
-            
-            if n_vars > args.max_vars:
-                problem_info['config'] = "SKIPPED_MAX_VARS"
-                with open(csv_path, 'a', newline='') as f:
-                    csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
-                del mip_model
-                gc.collect()
-                continue
+        # ==========================================
+        # MULTIPROCESSING TIMEOUT BLOCK (WINDOWS SAFE)
+        # ==========================================
+        q = ctx.Queue()
+        p = ctx.Process(target=preprocess_worker, args=(str(filepath), q, args.max_vars))
+        p.start()
+        
+        # Wait up to `timeout_prep` seconds for the worker to finish
+        p.join(timeout=args.timeout_prep)
 
-            # --- GRAPH GENERATION ---
-            adj_dict, nodes, n_nodes, m_edges = create_implication_graph(mip_model)
-            problem_info.update({'n': n_nodes, 'm': m_edges})
-            
-            try:
-                t_scc_start = time.time()
-                # Feed the raw dictionary into our optimized function
-                var_to_scc, all_vars, num_sccs, reversed_topo, adj = build_scc_structures(adj_dict, nodes)
-                t_scc = time.time() - t_scc_start
-                
-                # Nuke raw graph dictionary immediately
-                del adj_dict
-                del nodes
-                gc.collect()
-                
-                t_elim_start = time.time()
-                dsu_v, d_elim_groups, i_map = elimination_on_implication_graph_scc(all_vars, var_to_scc)
-                t_elim = time.time() - t_elim_start
-                
-                t_fix_start = time.time()
-                f0, f1 = fixing_on_implication_graph_scc(all_vars, var_to_scc, num_sccs, reversed_topo, adj)
-                t_fix = time.time() - t_fix_start
-                
-                del var_to_scc
-                del all_vars
-                del reversed_topo
-                del adj
-                gc.collect()
-
-                d_count = sum(len(g) - 1 for g in d_elim_groups)
-                i_count = sum(len(neighs) for neighs in i_map.values()) // 2
-                has_reductions = (d_count > 0 or i_count > 0 or len(f0) > 0 or len(f1) > 0)
-                
-                problem_info.update({
-                    'num_sccs': num_sccs,
-                    'scc_build_time': round(t_scc, 6),
-                    'elim_time': round(t_elim, 6),
-                    'fix_time': round(t_fix, 6),
-                    'has_reductions': has_reductions,
-                    'direct_elim_#': d_count,
-                    'indirect_elim_#': i_count,
-                    'fixing_0_#': len(f0),
-                    'fixing_1_#': len(f1)
-                })
-
-            except Exception as e:
-                print(f"    SCC Reduction Pipeline failed: {e}")
-                problem_info['config'] = f"REDUCTION_FAIL: {str(e)[:40]}"
-                with open(csv_path, 'a', newline='') as f:
-                    csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
-                del mip_model
-                gc.collect()
-                continue
-
-            # 3. Gurobi Solving Logic
-            DE_pairs = [
-                ('1'+v1, '1'+v2) 
-                for group in d_elim_groups 
-                for i, v1 in enumerate(sorted(group)) 
-                for v2 in sorted(group)[i+1:]
-            ]
-            
-            IE_pairs = []
-            seen_ie = set()
-            for a, ns in i_map.items():
-                for b in ns:
-                    pair = tuple(sorted(('1'+a, '1'+b)))
-                    if pair not in seen_ie:
-                        seen_ie.add(pair)
-                        IE_pairs.append(pair)
-                        
-            del d_elim_groups
-            del i_map
-            del dsu_v
-            gc.collect()
-
-            configs = [("Baseline", {})]
-            if d_count > 0 or i_count > 0:
-                configs.append(("Elimination_Only", {"DE": DE_pairs, "IE": IE_pairs}))
-            if len(f0) > 0 or len(f1) > 0:
-                configs.append(("Fixing_Only", {"F0": f0, "F1": f1}))
-            if len(configs) == 3:
-                configs.append(("All_Preprocessing", {"F0": f0, "F1": f1, "DE": DE_pairs, "IE": IE_pairs}))
-            
-            if not has_reductions:
-                problem_info['config'] = "No_Reductions_Found"
-                with open(csv_path, 'a', newline='') as f:
-                    csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
-                print(f"   No reductions found for {filepath.name}. Skipping Gurobi solves.")
-                del mip_model
-                gc.collect()
-                continue
-
-            try:
-                gurobi_base_model = gp.read(str(filepath))
-                for cfg_name, changes in configs:
-                    row = problem_info.copy()
-                    row['config'] = cfg_name
-                    
-                    try:
-                        m_solve = gurobi_base_model.copy()
-                        m_solve.setParam("Presolve", 0)
-                        m_solve.setParam("TimeLimit", 3600)
-
-                        apply_changes_to_model(
-                            m_solve, 
-                            changes.get("F0", set()), 
-                            changes.get("F1", set()), 
-                            changes.get("DE", []), 
-                            changes.get("IE", []), 
-                            []
-                        )
-
-                        t_solve_start = time.time()
-                        m_solve.optimize()
-                        solve_duration = round(time.time() - t_solve_start, 4)
-                        
-                        row.update({
-                            'solve_status': m_solve.Status,
-                            'solve_time': solve_duration,
-                            'nodes': int(m_solve.NodeCount),
-                            'obj_val': m_solve.ObjVal if m_solve.SolCount > 0 else "N/A",
-                            'obj_bound': m_solve.ObjBound
-                        })
-                        
-                    except Exception as e:
-                        print(f"    Config {cfg_name} failed: {e}")
-                        row['solve_status'] = f"FAILED: {str(e)[:30]}"
-                    
-                    finally:
-                        with open(csv_path, 'a', newline='') as f:
-                            csv.DictWriter(f, fieldnames=fieldnames).writerow(row)
-                        if 'm_solve' in locals():
-                            del m_solve
-                            gc.collect()
-            except Exception as e:
-                print(f"  Gurobi model load failed: {e}")
-                problem_info['config'] = "GUROBI_LOAD_FAIL"
-                with open(csv_path, 'a', newline='') as f:
-                    csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
-
-        except Exception as e:
-            print(f"  Critical error on {filepath.name}: {e}")
-            problem_info['config'] = f"CRITICAL_ERROR: {str(e)[:50]}"
+        if p.is_alive():
+            print(f"    TIMEOUT: Preprocessing exceeded {args.timeout_prep}s. Terminating worker.")
+            p.terminate()
+            p.join() # Clean up zombie process
+            problem_info['config'] = "TIMEOUT_PREPROCESSING"
             with open(csv_path, 'a', newline='') as f:
                 csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
+            continue
+
+        # If the worker finished (or crashed), try to get the results
+        try:
+            res = q.get_nowait()
+        except queue.Empty:
+            # If the queue is empty, the process died violently (e.g., MemoryError crash)
+            print(f"    CRITICAL ERROR: Worker process crashed silently (Likely Out of Memory).")
+            problem_info['config'] = "CRITICAL_ERROR: Process Crashed"
+            with open(csv_path, 'a', newline='') as f:
+                csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
+            continue
+
+        # Handle explicit messages sent from the worker
+        if res["status"] == "skipped":
+            print(f"  Variables: {res['n_vars']}")
+            problem_info['config'] = res["reason"]
+            with open(csv_path, 'a', newline='') as f:
+                csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
+            continue
+
+        elif res["status"] == "error":
+            print(f"    SCC Reduction Pipeline failed: {res['message']}")
+            problem_info['config'] = f"REDUCTION_FAIL: {res['message'][:40]}"
+            with open(csv_path, 'a', newline='') as f:
+                csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
+            continue
+
+        # --- SUCCESS PATH ---
+        print(f"  Variables: {res['n_vars']}")
+        problem_info.update({
+            'n': res["n_nodes"], 'm': res["m_edges"], 'num_sccs': res["num_sccs"],
+            'scc_build_time': round(res["t_scc"], 6),
+            'elim_time': round(res["t_elim"], 6),
+            'fix_time': round(res["t_fix"], 6),
+            'has_reductions': res["has_reductions"],
+            'direct_elim_#': res["d_count"],
+            'indirect_elim_#': res["i_count"],
+            'fixing_0_#': len(res["f0"]),
+            'fixing_1_#': len(res["f1"])
+        })
+
+        if not res["has_reductions"]:
+            problem_info['config'] = "No_Reductions_Found"
+            with open(csv_path, 'a', newline='') as f:
+                csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
+            print(f"   No reductions found for {filepath.name}. Skipping Gurobi solves.")
+            continue
+
+        # 3. Gurobi Solving Logic (Only runs if reductions were found)
+        configs = [("Baseline", {})]
+        if res["d_count"] > 0 or res["i_count"] > 0:
+            configs.append(("Elimination_Only", {"DE": res["DE_pairs"], "IE": res["IE_pairs"]}))
+        if len(res["f0"]) > 0 or len(res["f1"]) > 0:
+            configs.append(("Fixing_Only", {"F0": res["f0"], "F1": res["f1"]}))
+        if len(configs) == 3:
+            configs.append(("All_Preprocessing", {"F0": res["f0"], "F1": res["f1"], "DE": res["DE_pairs"], "IE": res["IE_pairs"]}))
+        
+        try:
+            # We ONLY load Gurobi in the main thread! MIP memory is already cleaned up.
+            gurobi_base_model = gp.read(str(filepath))
+            for cfg_name, changes in configs:
+                row = problem_info.copy()
+                row['config'] = cfg_name
                 
-        finally:
-            for var in ['mip_model', 'gurobi_base_model', 'DE_pairs', 'IE_pairs', 'f0', 'f1', 'adj_dict']:
-                if var in locals():
-                    del locals()[var]
-            gc.collect()
+                try:
+                    m_solve = gurobi_base_model.copy()
+                    m_solve.setParam("Presolve", 0)
+                    m_solve.setParam("TimeLimit", 3600)
+
+                    apply_changes_to_model(
+                        m_solve, 
+                        changes.get("F0", set()), 
+                        changes.get("F1", set()), 
+                        changes.get("DE", []), 
+                        changes.get("IE", []), 
+                        []
+                    )
+
+                    t_solve_start = time.time()
+                    m_solve.optimize()
+                    solve_duration = round(time.time() - t_solve_start, 4)
+                    
+                    row.update({
+                        'solve_status': m_solve.Status,
+                        'solve_time': solve_duration,
+                        'nodes': int(m_solve.NodeCount),
+                        'obj_val': m_solve.ObjVal if m_solve.SolCount > 0 else "N/A",
+                        'obj_bound': m_solve.ObjBound
+                    })
+                    
+                except Exception as e:
+                    print(f"    Config {cfg_name} failed: {e}")
+                    row['solve_status'] = f"FAILED: {str(e)[:30]}"
+                
+                finally:
+                    with open(csv_path, 'a', newline='') as f:
+                        csv.DictWriter(f, fieldnames=fieldnames).writerow(row)
+        except Exception as e:
+            print(f"  Gurobi model load failed: {e}")
+            problem_info['config'] = "GUROBI_LOAD_FAIL"
+            with open(csv_path, 'a', newline='') as f:
+                csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
 
     print(f"Batch processing complete. Results safely saved in {csv_path}")
 
 if __name__ == "__main__":
+    mp.freeze_support() # Essential for Windows multiprocessing
     main()

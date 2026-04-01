@@ -310,7 +310,7 @@ def find_problem_files(root: Path) -> list[Path]:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--problems_dir", type=str, default="problems")
-    parser.add_argument("--max_vars", type=int, default=1000000)
+    parser.add_argument("--max_vars", type=int, default=100000)
     args = parser.parse_args()
 
     problems_root = Path(args.problems_dir)
@@ -319,6 +319,18 @@ def main():
         return
 
     files = find_problem_files(problems_root)
+    
+    # Check for toSkip.txt and load instances to skip
+    skip_set = set()
+    skip_file_path = Path("toSkip.txt")
+    if skip_file_path.exists():
+        with open(skip_file_path, 'r') as f:
+            for line in f:
+                name = line.strip()
+                if name:
+                    skip_set.add(name)
+        print(f"Loaded {len(skip_set)} instances to skip from toSkip.txt")
+
     today = datetime.now().strftime("%Y-%m-%d")
     results_dir = Path(f"results_{today}_batch_resilient")
     results_dir.mkdir(exist_ok=True)
@@ -337,6 +349,10 @@ def main():
         writer.writeheader()
 
     for idx, filepath in enumerate(files, start=1):
+        if filepath.name in skip_set:
+            print(f"[{idx}/{len(files)}] Skipping {filepath.name} (found in toSkip.txt)")
+            continue
+            
         print(f"[{idx}/{len(files)}] Processing {filepath.name}")
 
         problem_info = {k: "N/A" for k in fieldnames}
@@ -347,6 +363,8 @@ def main():
             mip_model.read(str(filepath))
             
             n_vars = len(mip_model.vars)
+            print(f"  Variables: {n_vars}")
+            
             if n_vars > args.max_vars:
                 problem_info['config'] = "SKIPPED_MAX_VARS"
                 with open(csv_path, 'a', newline='') as f:

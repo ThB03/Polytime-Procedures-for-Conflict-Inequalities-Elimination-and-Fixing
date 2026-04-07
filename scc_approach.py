@@ -328,7 +328,7 @@ def find_problem_files(root: Path) -> list[Path]:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--problems_dir", type=str, default="problems")
-    parser.add_argument("--max_vars", type=int, default=1000000)
+    parser.add_argument("--max_vars", type=int, default=200000)
     parser.add_argument("--timeout_prep", type=int, default=3600, help="Max seconds for SCC preprocessing.")
     args = parser.parse_args()
 

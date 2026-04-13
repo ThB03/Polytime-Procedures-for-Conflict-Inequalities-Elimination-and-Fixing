@@ -507,7 +507,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--problems_dir", type=str, default="problems")
     parser.add_argument("--max_vars", type=int, default=1000000)
-    parser.add_argument("--timeout_prep", type=int, default=3600, help="Max seconds per isolated preprocessing step.")
+    parser.add_argument("--timeout_prep", type=int, default=1800, help="Max seconds per isolated preprocessing step.")
     args = parser.parse_args()
 
     problems_root = Path(args.problems_dir)

@@ -20,8 +20,8 @@ procedures for:
 | `config.json` | Batch configuration: instance path, category, and enabled reductions. |
 | `GetInstances.py` | Downloads MIPLIB instances listed in `problems_list/`. |
 | `problems_list/` | Text files defining the MIPLIB instance sets used by the experiments. |
-| `main.py` | Legacy conflict-graph implementation using the CBC-backed `mip` package. |
-| `main_gurobi.py` | Legacy Gurobi conflict-graph implementation. |
+| `main.py` | Conflict-graph implementation using the CBC-backed `mip` package. |
+| `main_gurobi.py` | Gurobi conflict-graph implementation. |
 | `implication_graph.py` | Supporting implication-graph routines. |
 | `readme_images/` | Figures used in this README. |
 

@@ -13,6 +13,11 @@ from typing import Dict, List, Set, Tuple
 import numpy as np
 import gurobipy as gp
 
+# Compatibility shim: gurobipy <=12 had Model.getColumn; gurobipy 13+ renamed it to getCol.
+# Alias so either name works without touching call sites.
+if not hasattr(gp.Model, 'getColumn') and hasattr(gp.Model, 'getCol'):
+    gp.Model.getColumn = gp.Model.getCol
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Model Manipulation
 # ══════════════════════════════════════════════════════════════════════════════
@@ -59,84 +64,219 @@ def build_substitution_map(DE, IE):
 def substitute_variables_in_model(model, substitution_map):
     """
     Manually substitutes variables in a Gurobi model based on a mapping.
-    Uses getColumn() for O(V) constraint lookup and safely handles Objective offsets.
+    For each entry var -> (rep, flip):
+        flip == 0  means  var = rep           (Direct Elim)
+        flip == 1  means  var = 1 - rep       (Indirect Elim)
+    Rewrites every row a*var in 'constr' as (a)*rep  (flip=0) or (-a)*rep with
+    RHS -= a (flip=1); rewrites the objective a*var analogously with ObjCon += a
+    for flip=1 to preserve the value of the objective.
+
+    Implementation notes (correctness):
+      * gurobipy's LinExpr.getCoeff(i) takes an INTEGER INDEX; it does NOT accept
+        a Var.  Passing a Var raises TypeError, which previously fell into a bare
+        `except` and silently set rep_coeff = 0 — that would overwrite the rep
+        coefficient with 0 + coeff on every touched row.  We look up rep's
+        coefficient by scanning the row's entries by VarName instead.
+      * gurobipy uses lazy updates (UpdateMode=1 by default).  chgCoeff / remove
+        changes are pending until model.update().  We therefore pre-compute all
+        coefficient/RHS/Obj deltas in pure Python first, THEN apply them in a
+        single batched write, then call update() once.  This also guarantees
+        that several sources aliasing into the same rep do not step on each
+        other's accumulation.
     """
+    from collections import defaultdict
+
     variables = {v.VarName: v for v in model.getVars()}
+
+    # ---- Pass 1: compute all deltas without mutating the model ----
+    # (constr_name -> rep_name -> delta to add to the rep's coefficient)
+    rep_coef_delta = defaultdict(lambda: defaultdict(float))
+    # (constr_name -> delta to add to RHS)
+    rhs_delta = defaultdict(float)
+    # (rep_name -> delta to add to rep.Obj), and total ObjCon delta
+    obj_delta = defaultdict(float)
+    objcon_delta = 0.0
+    # List of (constr, var) pairs to zero out.
+    zero_coef_pairs = []
+    # Per-constraint cache of (name -> coef) so repeated getRow calls are avoided.
+    constr_cache = {}
+
+    def get_constr_coefs(c):
+        if c.ConstrName in constr_cache:
+            return constr_cache[c.ConstrName]
+        row = model.getRow(c)
+        d = {row.getVar(i).VarName: row.getCoeff(i) for i in range(row.size())}
+        constr_cache[c.ConstrName] = d
+        return d
 
     for var_name, (rep_name, flip) in substitution_map.items():
         if var_name not in variables or rep_name not in variables:
             continue
-
         var = variables[var_name]
-        rep = variables[rep_name]
 
         col = model.getColumn(var)
-        
         for i in range(col.size()):
             constr = col.getConstr(i)
             coeff = col.getCoeff(i)
-            
-            model.chgCoeff(constr, var, 0.0)
-            
-            expr = model.getRow(constr)
-            try:
-                rep_coeff = expr.getCoeff(rep)
-            except:
-                rep_coeff = 0.0  
-
+            zero_coef_pairs.append((constr, var))
             if flip == 0:
-                model.chgCoeff(constr, rep, rep_coeff + coeff)
+                rep_coef_delta[constr.ConstrName][rep_name] += coeff
             else:
-                model.chgCoeff(constr, rep, rep_coeff - coeff)
-                constr.RHS -= coeff
+                rep_coef_delta[constr.ConstrName][rep_name] -= coeff
+                rhs_delta[constr.ConstrName] -= coeff
 
         obj_coeff = var.Obj
-        if obj_coeff != 0:
-            var.Obj = 0.0
+        if obj_coeff != 0.0:
             if flip == 0:
-                rep.Obj += obj_coeff
+                obj_delta[rep_name] += obj_coeff
             else:
-                rep.Obj -= obj_coeff
-                model.ObjCon += obj_coeff  # CRITICAL FIX: Add offset instead of flipping ModelSense
+                obj_delta[rep_name] -= obj_coeff
+                objcon_delta += obj_coeff
 
-        model.remove(var)
+    # ---- Pass 2: read current rep coefficients / RHS in one sweep ----
+    # Resolve deltas to absolute new values using cached original coefficients.
+    constr_by_name = {c.ConstrName: c for c in model.getConstrs()}
+    new_rep_coef = []  # list of (constr, rep_var, new_coef)
+    new_rhs = []       # list of (constr, new_rhs)
+    for cname, rep_deltas in rep_coef_delta.items():
+        c = constr_by_name[cname]
+        current = get_constr_coefs(c)
+        for rep_name, delta in rep_deltas.items():
+            rep_var = variables[rep_name]
+            new_rep_coef.append((c, rep_var, current.get(rep_name, 0.0) + delta))
+    for cname, drhs in rhs_delta.items():
+        c = constr_by_name[cname]
+        new_rhs.append((c, c.RHS + drhs))
+
+    # ---- Pass 3: apply all mutations ----
+    for constr, var in zero_coef_pairs:
+        model.chgCoeff(constr, var, 0.0)
+    for constr, rep_var, new_coef in new_rep_coef:
+        model.chgCoeff(constr, rep_var, new_coef)
+    for constr, rhs_val in new_rhs:
+        constr.RHS = rhs_val
+
+    # Objective deltas
+    for rep_name, d in obj_delta.items():
+        rep_var = variables[rep_name]
+        rep_var.Obj = rep_var.Obj + d
+    if objcon_delta != 0.0:
+        model.ObjCon += objcon_delta
+
+    # Zero out the substituted variables' obj and remove them.
+    for var_name, _ in substitution_map.items():
+        if var_name in variables:
+            var = variables[var_name]
+            try:
+                var.Obj = 0.0
+                model.remove(var)
+            except Exception:
+                pass
 
     model.update()
 
 def apply_changes_to_model(model, F0, F1, DE, IE):
     """
-    Applies all known reductions and constraints to a Gurobi model:
-    - Fixes variables from F0 and F1
-    - Substitutes variables based on DE and IE (eliminates)
-    - Adds constraints for AE (conflict edges)
+    Applies all known reductions to a Gurobi model:
+    - Substitutes variables based on DE and IE (eliminates aliases into representatives).
+    - Fixes variables from F0 and F1 by PHYSICALLY REMOVING them from the model
+      (fix-to-0 ->  model.remove(var);
+       fix-to-1 ->  for each row c with coef a: c.RHS -= a, ObjCon += var.Obj, then model.remove(var)).
+      This makes fixing structurally symmetric with elimination: both shrink the LP instead
+      of merely tightening bounds, which is the key to the reduction mattering when
+      Gurobi's presolve/propagation is disabled.
+    - If a fixed variable has been substituted out (alias), the fixing is translated onto
+      its representative via the DE/IE substitution_map, accounting for flip.
     """
+    # -------------------------------------------------
+    # 1. Build substitution map from DE/IE and translate F0/F1 onto representatives
+    # -------------------------------------------------
+    substitution_map = build_substitution_map(DE, IE)
+
+    effective_F0 = set()
+    effective_F1 = set()
+    for v in F0:
+        if v in substitution_map:
+            rep, flip = substitution_map[v]
+            # v = rep (flip=0) or v = 1 - rep (flip=1); v == 0 implies rep == 0 or rep == 1 respectively
+            (effective_F0 if flip == 0 else effective_F1).add(rep)
+        else:
+            effective_F0.add(v)
+    for v in F1:
+        if v in substitution_map:
+            rep, flip = substitution_map[v]
+            (effective_F1 if flip == 0 else effective_F0).add(rep)
+        else:
+            effective_F1.add(v)
+
+    # -------------------------------------------------
+    # 2. Apply elimination (removes aliased variables, rewrites coefficients onto reps)
+    # -------------------------------------------------
+    substitute_variables_in_model(model, substitution_map)
+
+    # -------------------------------------------------
+    # 3. Physically remove fixed variables (post-substitution, so reps are the right targets)
+    # -------------------------------------------------
     vars_dict = {v.VarName: v for v in model.getVars()}
     fixed_vars = {}
 
-    # ------------------------
-    # 1. Fix variables in F0 and F1
-    # OPTIMIZATION: Loop through the F0/F1 sets, not the whole model
-    for v_name in F0:
-        if v_name in vars_dict:
-            var = vars_dict[v_name]
-            var.LB = 0
-            var.UB = 0
-            fixed_vars[v_name] = 0
+    # Fix-to-1: move the constant contribution to each row's RHS, bump ObjCon, remove var.
+    #
+    # Correctness note: gurobipy uses lazy updates (UpdateMode=1).  A naive loop
+    #   for v in effective_F1:
+    #       for (c, a) in col(v):
+    #           c.RHS -= a
+    # exhibits "last-write-wins" semantics whenever two F1 vars share a row,
+    # because each `-=` reads the pre-loop value of c.RHS (pending writes are
+    # not visible without an intervening model.update()).  On academictimetablebig
+    # this drove two rows to structurally-infeasible RHS and triggered a false
+    # 0.28s INFEASIBLE verdict.  See investigation_bug_atb/BUG_REPORT.md.
+    # Fix: accumulate per-constraint RHS deltas in Python, then do a single
+    # write per constraint at the end.
+    rhs_delta = defaultdict(float)
+    objcon_delta = 0.0
+    f1_to_remove = []
+    for v_name in effective_F1:
+        if v_name not in vars_dict:
+            continue
+        var = vars_dict[v_name]
+        col = model.getColumn(var)
+        for i in range(col.size()):
+            c = col.getConstr(i)
+            a = col.getCoeff(i)
+            rhs_delta[c.ConstrName] += -a
+        if var.Obj != 0.0:
+            objcon_delta += var.Obj
+        f1_to_remove.append(var)
+        fixed_vars[v_name] = 1
 
-    for v_name in F1:
-        if v_name in vars_dict:
-            var = vars_dict[v_name]
-            var.LB = 1
-            var.UB = 1
-            fixed_vars[v_name] = 1
+    # Resolve RHS deltas to absolute values using the current (pre-write) RHS,
+    # then apply one write per constraint.
+    if rhs_delta:
+        constr_by_name = {c.ConstrName: c for c in model.getConstrs()}
+        new_rhs = [(constr_by_name[nm], constr_by_name[nm].RHS + d)
+                   for nm, d in rhs_delta.items()]
+        for c, r in new_rhs:
+            c.RHS = r
+    if objcon_delta != 0.0:
+        model.ObjCon += objcon_delta
+    for v in f1_to_remove:
+        model.remove(v)
 
-    # ------------------------
-    # 2. Eliminate variables from DE and IE
-    substitution_map = build_substitution_map(DE, IE)
-    substitute_variables_in_model(model, substitution_map)
+    # Fix-to-0: contribution is 0 everywhere; just remove the variable.
+    for v_name in effective_F0:
+        if v_name not in vars_dict:
+            continue
+        # If the name also appeared in effective_F1 (shouldn't happen unless contradictory
+        # inputs), the var was already removed; guard with getVarByName.
+        var = model.getVarByName(v_name)
+        if var is None:
+            continue
+        model.remove(var)
+        fixed_vars[v_name] = 0
 
     model.update()
-    
+
     return {
         "fixed": fixed_vars,
         "substitution_map": substitution_map
@@ -454,17 +594,17 @@ def preprocess_worker(filepath_str: str, result_queue: mp.Queue, max_vars: int):
         i_count = sum(len(neighs) for neighs in i_map.values()) // 2
         
         DE_pairs = [
-            ('1'+v1, '1'+v2) 
-            for group in d_elim_groups 
-            for i, v1 in enumerate(sorted(group)) 
+            (v1, v2)
+            for group in d_elim_groups
+            for i, v1 in enumerate(sorted(group))
             for v2 in sorted(group)[i+1:]
         ]
-        
+
         IE_pairs = []
         seen_ie = set()
         for a, ns in i_map.items():
             for b in ns:
-                pair = tuple(sorted(('1'+a, '1'+b)))
+                pair = tuple(sorted((a, b)))
                 if pair not in seen_ie:
                     seen_ie.add(pair)
                     IE_pairs.append(pair)
@@ -486,14 +626,28 @@ def preprocess_worker(filepath_str: str, result_queue: mp.Queue, max_vars: int):
         })
 
         # --- Fixing Step (Bitset) ---
-        t_fix_bitset_start = time.time()
-        f0_bitset, f1_bitset = fixing_on_implication_graph_scc_bitset(node_to_scc, n_vars, idx_to_var, num_sccs, dag_adj)
-        t_fix_bitset = time.time() - t_fix_bitset_start
-        
-        result_queue.put({
-            "step": "fix_bitset", "t_fix_bitset": t_fix_bitset,
-            "f0_bitset": f0_bitset, "f1_bitset": f1_bitset
-        })
+        # Isolate the bitset path: it materializes a Python-int reach bitset per
+        # SCC and can OOM on huge graphs (e.g. rail03 has 1.29M SCCs over a 30M-
+        # edge implication graph).  Failures here must NOT poison the rest of the
+        # record — BFS fixings, DE/IE pairs, and timings are already valid.
+        try:
+            t_fix_bitset_start = time.time()
+            f0_bitset, f1_bitset = fixing_on_implication_graph_scc_bitset(node_to_scc, n_vars, idx_to_var, num_sccs, dag_adj)
+            t_fix_bitset = time.time() - t_fix_bitset_start
+
+            result_queue.put({
+                "step": "fix_bitset", "t_fix_bitset": t_fix_bitset,
+                "f0_bitset": f0_bitset, "f1_bitset": f1_bitset
+            })
+        except Exception as bitset_err:
+            import traceback as _tb
+            result_queue.put({
+                "step": "fix_bitset_failed",
+                "t_fix_bitset": time.time() - t_fix_bitset_start,
+                "f0_bitset": set(),
+                "f1_bitset": set(),
+                "bitset_err": f"{type(bitset_err).__name__}: {bitset_err}\n{_tb.format_exc()}"
+            })
 
     except Exception as e:
         import traceback
@@ -514,7 +668,28 @@ def main():
     parser.add_argument("--no_elim", action="store_true", help="Disable elimination completely.")
     parser.add_argument("--no_fix", action="store_true", help="Disable fixing completely.")
     parser.add_argument("--no_conf", action="store_true", help="Disable config defaults (if applicable).")
+    parser.add_argument(
+        "--seeds",
+        type=str,
+        default="0,1,2,3,4",
+        help="Comma-separated Gurobi Seed values to run each (instance,config) under. Default: '0,1,2,3,4'."
+    )
+    parser.add_argument(
+        "--time_limit",
+        type=int,
+        default=3600,
+        help="Per-solve time limit in seconds."
+    )
     args = parser.parse_args()
+
+    # Parse seeds
+    try:
+        seed_list = [int(s.strip()) for s in args.seeds.split(",") if s.strip() != ""]
+    except ValueError:
+        print(f"[!] Invalid --seeds value '{args.seeds}'. Must be comma-separated integers.")
+        return
+    if not seed_list:
+        seed_list = [0]
 
     if not os.path.exists(args.config_path):
         print(f"[!] Config file '{args.config_path}' not found.")
@@ -528,18 +703,24 @@ def main():
     tag_str = f"_{args.tag}" if args.tag else ""
     results_dir = Path(f"results_{today}{tag_str}")
     results_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # Per-solve Gurobi logs live here; console stays quiet.
+    # Resolve to an absolute path so Gurobi (which on Windows sometimes struggles
+    # with relative paths) has no ambiguity about where to open the log file.
+    logs_dir = (results_dir / "logs").resolve()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
     csv_path = results_dir / "batch_results.csv"
     
-    # Added 'run_id' and 'category' to CSV columns
+    # Added 'run_id' and 'category' to CSV columns. 'seed' supports multi-seed averaging.
     fieldnames = [
         'run_id', 'category', 'problem', 'n', 'm', 'num_sccs',
         'scc_build_time', 'elim_time', 'fix_bfs_time', 'fix_bitset_time',
-        'has_reductions', 
-        'direct_elim_#', 'indirect_elim_#', 
+        'has_reductions',
+        'direct_elim_#', 'indirect_elim_#',
         'fixing_0_bfs_#', 'fixing_1_bfs_#',
         'fixing_0_bitset_#', 'fixing_1_bitset_#',
-        'config', 'solve_status', 'solve_time', 'nodes', 'obj_val', 'obj_bound'
+        'config', 'seed', 'solve_status', 'solve_time', 'nodes', 'obj_val', 'obj_bound'
     ]
 
     # Write headers if new file
@@ -614,12 +795,23 @@ def main():
                     worker_res["status"] = "error"
                     worker_res["error_msg"] = msg["message"]
                     break
-                
+                elif msg["step"] == "fix_bitset_failed":
+                    # Bitset path crashed (likely OOM on huge graphs).  BFS results
+                    # are already in worker_res from the previous step.  Record the
+                    # failure but don't abort — DE/IE/F0/F1 (BFS) are still valid.
+                    for k, v in msg.items():
+                        if k not in ("step", "bitset_err"):
+                            worker_res[k] = v
+                    worker_res["bitset_err"] = msg.get("bitset_err", "")
+                    print(f"    - Step 'fix_bitset' FAILED ({worker_res['bitset_err'].splitlines()[0][:80] if worker_res['bitset_err'] else 'unknown'}); keeping BFS results and continuing.")
+                    current_step_idx += 1
+                    continue
+
                 # Merge incoming step results
                 for k, v in msg.items():
                     if k != "step":
                         worker_res[k] = v
-                
+
                 print(f"    - Completed step: {expected_step}")
                 current_step_idx += 1
                 
@@ -660,11 +852,33 @@ def main():
             'fixing_1_bitset_#': len(worker_res["f1_bitset"])
         })
 
-        if worker_res["status"] in ["skipped", "error"] or worker_res["status"].startswith("crash_graph") or worker_res["status"].startswith("timeout_graph"):
-            problem_info['config'] = f"{worker_res['status']}: {worker_res['error_msg'][:40]}"
+        # SKIPPED is always terminal.  Graph-level crash/timeout means we have
+        # nothing usable.  Plain "error" used to be terminal too — but if the
+        # worker died AFTER producing usable DE/IE/F0/F1 (e.g. bitset OOM on
+        # rail03), short-circuiting here loses the chance to run Baseline +
+        # Elimination_Only / Fixing_Only with the BFS-side results we already
+        # collected.  So: only abort if reductions are empty.
+        terminal_now = (
+            worker_res["status"] == "skipped"
+            or worker_res["status"].startswith("crash_graph")
+            or worker_res["status"].startswith("timeout_graph")
+            or (worker_res["status"] == "error" and not has_reductions)
+        )
+        if terminal_now:
+            # Truncate to 200 chars so the actual exception class is visible
+            # (40 was eating "MemoryError: ..." and friends).
+            problem_info['config'] = f"{worker_res['status']}: {worker_res['error_msg'][:200]}"
             with open(csv_path, 'a', newline='') as f:
                 csv.DictWriter(f, fieldnames=fieldnames).writerow(problem_info)
             continue
+
+        # Worker errored AFTER producing reductions (typically bitset OOM after
+        # BFS succeeded): record the diagnostic in the row but proceed to
+        # Gurobi solves with whatever we have.
+        if worker_res["status"] == "error":
+            print(f"    [warn] Worker errored late but reductions are usable; "
+                  f"proceeding with Gurobi solves.  err: {worker_res['error_msg'][:120]!r}")
+            worker_res["status"] = "partial_success"
 
         if not has_reductions:
             problem_info['config'] = f"No_Reductions_{worker_res['status']}"
@@ -699,63 +913,94 @@ def main():
         
         try:
             # We ONLY load Gurobi in the main thread! MIP memory is already cleaned up.
-            gurobi_base_model = gp.read(str(filepath))
-            
+            # Use a quiet env so the MPS-read banner doesn't spam the console.
+            _read_env = gp.Env(empty=True)
+            _read_env.setParam("OutputFlag", 0)
+            _read_env.start()
+            gurobi_base_model = gp.read(str(filepath), env=_read_env)
+
             for cfg_name, changes in configs_to_run:
-                row = problem_info.copy()
-                row['config'] = f"{cfg_name} (Status: {worker_res['status']})"
-                
-                try:
-                    m_solve = gurobi_base_model.copy()
-                    m_solve.setParam("Presolve", 0)
-                    m_solve.setParam("TimeLimit", 3600)
-                    
-                    # Additional presolving disabled
-                    m_solve.setParam('AggFill', 0)
-                    m_solve.setParam('Aggregate', 0)
-                    m_solve.setParam('DualReductions', 0)
-                    m_solve.setParam('PreCrush', 0)
-                    m_solve.setParam('PreDepRow', 0)
-                    m_solve.setParam('PreDual', 0)
-                    m_solve.setParam('PreMIQCPForm', 0)
-                    m_solve.setParam('PrePasses', 0)
-                    m_solve.setParam('PreQLinearize', 0)
-                    m_solve.setParam('PreSOS1BigM', 0)
-                    m_solve.setParam('PreSOS1Encoding', 0)
-                    m_solve.setParam('PreSOS2BigM', 0)
-                    m_solve.setParam('PreSOS2Encoding', 0)
-                    m_solve.setParam('PreSparsify', 0)
-                    m_solve.setParam('Cuts', 0)
+                for seed in seed_list:
+                    row = problem_info.copy()
+                    row['config'] = f"{cfg_name} (Status: {worker_res['status']})"
+                    row['seed'] = seed
 
-                    # Apply extracted constraints
-                    apply_changes_to_model(
-                        m_solve, 
-                        changes.get("F0", set()), 
-                        changes.get("F1", set()), 
-                        changes.get("DE", []), 
-                        changes.get("IE", [])
-                    )
+                    try:
+                        m_solve = gurobi_base_model.copy()
+                        # Only two knobs: Presolve=0 isolates our reductions from Gurobi's
+                        # own probing/bound-strengthening; everything else (Cuts, Aggregate,
+                        # PreSparsify, ...) is orthogonal to our contribution so we leave
+                        # Gurobi's defaults in place. Seed controls run-to-run variance.
+                        m_solve.setParam("Presolve", 0)
+                        m_solve.setParam("TimeLimit", args.time_limit)
+                        m_solve.setParam("Seed", seed)
 
-                    t_solve_start = time.time()
-                    m_solve.optimize()
-                    solve_duration = round(time.time() - t_solve_start, 4)
-                    
-                    row.update({
-                        'solve_status': m_solve.Status,
-                        'solve_time': solve_duration,
-                        'nodes': int(m_solve.NodeCount),
-                        'obj_val': m_solve.ObjVal if m_solve.SolCount > 0 else "N/A",
-                        'obj_bound': m_solve.ObjBound
-                    })
-                    
-                except Exception as e:
-                    print(f"    Config {cfg_name} failed: {e}")
-                    row['solve_status'] = f"FAILED: {str(e)[:30]}"
-                
-                finally:
-                    with open(csv_path, 'a', newline='') as f:
-                        csv.DictWriter(f, fieldnames=fieldnames).writerow(row)
-                        
+                        # Redirect Gurobi's own output to a per-solve log file so the
+                        # batch runner's console stays readable.  Keep the filename
+                        # SHORT — Windows MAX_PATH is 260 and the repo/results prefix
+                        # can easily eat 200+ chars, leaving little room.  Abbreviate
+                        # config names and cap the problem stem at 24 chars.
+                        _CFG_ABBR = {
+                            "Baseline": "base",
+                            "Elimination_Only": "elim",
+                            "Fixing_Only": "fix",
+                            "All_Preprocessing": "all",
+                        }
+                        safe_cfg = _CFG_ABBR.get(cfg_name, cfg_name[:6]).lower()
+                        safe_problem = filepath.stem[:24]
+                        log_path = logs_dir / f"{safe_problem}_{safe_cfg}_s{seed}.log"
+                        # Always silence the console; LogFile is best-effort.  If Gurobi
+                        # can't open the log file for whatever reason (Windows path quirks,
+                        # permissions, ...), just fall through with OutputFlag=0 so the
+                        # solve still runs silently.  This keeps the batch resilient.
+                        #
+                        # CRITICAL: The read env was created with OutputFlag=0 to silence the
+                        # MPS-read banner.  That setting propagates through .copy() and would
+                        # silence both the console AND the LogFile (OutputFlag=0 overrides
+                        # LogToConsole and LogFile).  Re-enable OutputFlag=1 here so Gurobi
+                        # actually emits messages, then route them to the file via
+                        # LogToConsole=0 + LogFile=...
+                        m_solve.setParam("OutputFlag", 1)
+                        m_solve.setParam("LogToConsole", 0)
+                        try:
+                            # Defensive: ensure the directory exists right before use, and
+                            # pass an absolute string path so Gurobi has no ambiguity.
+                            log_path.parent.mkdir(parents=True, exist_ok=True)
+                            m_solve.setParam("LogFile", str(log_path))
+                        except Exception as _log_err:
+                            print(f"    [warn] LogFile setup failed ({_log_err}); continuing with OutputFlag=0")
+                            m_solve.setParam("LogFile", "")
+                            m_solve.setParam("OutputFlag", 0)
+
+                        # Apply extracted reductions (physically removes fixed vars)
+                        apply_changes_to_model(
+                            m_solve,
+                            changes.get("F0", set()),
+                            changes.get("F1", set()),
+                            changes.get("DE", []),
+                            changes.get("IE", [])
+                        )
+
+                        t_solve_start = time.time()
+                        m_solve.optimize()
+                        solve_duration = round(time.time() - t_solve_start, 4)
+
+                        row.update({
+                            'solve_status': m_solve.Status,
+                            'solve_time': solve_duration,
+                            'nodes': int(m_solve.NodeCount),
+                            'obj_val': m_solve.ObjVal if m_solve.SolCount > 0 else "N/A",
+                            'obj_bound': m_solve.ObjBound
+                        })
+
+                    except Exception as e:
+                        print(f"    Config {cfg_name} (seed={seed}) failed: {e}")
+                        row['solve_status'] = f"FAILED: {str(e)[:30]}"
+
+                    finally:
+                        with open(csv_path, 'a', newline='') as f:
+                            csv.DictWriter(f, fieldnames=fieldnames).writerow(row)
+
         except Exception as e:
             print(f"  Gurobi model load failed: {e}")
             problem_info['config'] = "GUROBI_LOAD_FAIL"

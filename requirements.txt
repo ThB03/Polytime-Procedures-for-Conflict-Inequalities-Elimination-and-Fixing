@@ -1,26 +1,6 @@
---extra-index-url https://download.pytorch.org/whl/cu121
-#change url to you version of CUDA if you are not using CUDA 12.1
-
-#Base dependencies
-
 numpy
 networkx
 mip
 gurobipy
-
-#PyTorch (for the matrix_torch and bfs_torch pipelines)
-
-torch
-torchvision
-torchaudio
-
-#NVIDIA GPU acceleration (for the matrix_gpu pipeline)
-
-#Note: Change to cupy-cuda11x if you are running CUDA 11 instead of 12
-
-cupy-cuda12x
-
-#Intel GPU acceleration (for the matrix_gpu pipeline on Intel hardware)
-
-dpnp
-dpctl
+requests
+numba

@@ -1,65 +1,42 @@
-# Polytime-Procedures-for-Conflict-Inequalities-Elimination-and-Fixing
-This is the code and data repository for the paper "Polytime Procedures for Conflict Inequalities, Elimination, and Fixing" by Thiago Barbosa and Hamidreza Validi.
+# Polytime Procedures for Conflict Inequalities, Elimination, and Fixing
 
-We identify a new structure in the conflict graphs of MIP formulations with binary decision variables, which serves as the backbone of our proposed procedures for finding conflict inequalities, elimination, and fixing. We refer to this new structure as a hopscotch path.
+This repository contains the code and experimental infrastructure for the paper **"Polytime Procedures for Conflict Inequalities, Elimination, and Fixing"** by Thiago Barbosa and Hamidreza Validi (INFORMS Journal on Computing).
 
-A conflict graph             |  Two hopscotch paths
+## Overview
+
+We identify a new structure in conflict graphs of MIP formulations with binary decision variables called **hopscotch paths**, which serves as the backbone for polytime procedures to:
+- Add conflict inequalities
+- Eliminate redundant variables (direct and indirect)
+- Fix variables to zero or one
+
+### Key Contribution: Implication Graph Approach
+
+The paper presents two implementations:
+
+| Approach | Implementation | Section | Speed | Use Case |
+|----------|---|---------|-------|----------|
+| **Conflict Graph + Hopscotch Paths** | `main.py`, `main_gurobi.py` | 4 | Baseline | Theory & reproducibility |
+| **Implication Graph + SCCs** | `scc_approach_w_config.py` | 5 | **14–2,820× faster** | **Recommended for production** |
+
+The implication-graph approach achieves one to three orders of magnitude speedups by using strongly connected components (SCCs) and reachability on the SCC condensation DAG.
+
+## Visualization
+
+A conflict graph | Two hopscotch paths
 :-------------------------:|:-------------------------:
-![](readme_images/conflict_graph_github.PNG?raw=true "A conflict graph")   |  ![](readme_images/hopscotch_paths_github.PNG?raw=true "Two hopscotch paths")
+![](readme_images/conflict_graph_github.PNG?raw=true "A conflict graph") | ![](readme_images/hopscotch_paths_github.PNG?raw=true "Two hopscotch paths")
 
 ## Requirements
-- Python 3.11 (**required**)
-- Required libraries (listed in `requirements.txt`)
 
-## Install Requirements
+- **Python 3.11** (required)
+- **Gurobi 12.0+** (for Gurobi-based solvers; `main.py` uses free CBC solver)
+- See `requirements.txt` for Python dependencies
 
-```
+### Installation
+
+```bash
+# Install Python dependencies
 pip install -r requirements.txt
-```
 
-To download network-metis on anaconda run the following command on your conda environment
-```
-conda install -c conda-forge networkx-metis   
-```
-
-
-## Run
-To gather elimination, fixing, and conflicts:
-```
-python main.py path/to/config.json [--max_vars N]
-```
-
-To compare solve times using gurobi:
-```
-python main_gurobi.py path/to/config.json [--max_vars N]
-```
-To gather elimination, fixing, and conflicts on gpu:
-```
-python main_gpu.py path/to/config.json [--max_vars N]
-```
-
-To compare solve times using gurobi on gpu:
-```
-python main_gurobi_gpu.py path/to/config.json [--max_vars N]
-```
-
-To gather elimination, fixing, and conflicts:
-```
-python main_partition.py path/to/config.json [--max_vars N]
-```
-
-To compare solve times using gurobi:
-```
-python main_partition_gurobi.py path/to/config.json [--max_vars N]
-```
-## config.json
-The config file can specify a batch of runs. A particular run might look like this:
-
-```
-"entry_name": {
-  "filepath": "path/to/problem",
-  "category": "category",
-  "fixing": true,
-  "elimination": true
-}
-```
+# On conda (for NetworkX METIS support, optional):
+conda install -c conda-forge networkx-metis

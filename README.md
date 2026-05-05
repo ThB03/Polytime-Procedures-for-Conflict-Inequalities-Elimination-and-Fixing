@@ -49,12 +49,6 @@ Install dependencies from the repository root:
 python -m pip install -r requirements.txt
 ```
 
-Optional, if you use a conda environment and want NetworkX METIS support:
-
-```bash
-conda install -c conda-forge networkx-metis
-```
-
 ## Running the Full Pipeline
 
 Run these commands from the repository root.

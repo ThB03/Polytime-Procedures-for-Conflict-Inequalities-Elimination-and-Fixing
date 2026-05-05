@@ -188,7 +188,6 @@ If you use this code, please cite the paper:
 ```bibtex
 @article{barbosa_validi_polytime,
   title = {Polytime Procedures for Conflict Inequalities, Elimination, and Fixing},
-  author = {Barbosa, Thiago and Validi, Hamidreza},
-  journal = {INFORMS Journal on Computing}
+  author = {Barbosa, Thiago and Validi, Hamidreza}
 }
 ```

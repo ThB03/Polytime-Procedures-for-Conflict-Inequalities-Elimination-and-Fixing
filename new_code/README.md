@@ -49,7 +49,6 @@ two questions the Associate Editor raised in round R3:
       build_conflict_graph.py     CBC CoinConflictGraph -> arc file (python-mip)
       launch_solve_effect_benchmark.sh   one-hour solve-effect launcher
     results_tables/               result tables and CSVs cited by the paper
-    cmake/
     CMakeLists.txt
 
 ## Build

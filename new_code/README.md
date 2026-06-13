@@ -32,6 +32,11 @@ two questions the Associate Editor raised in round R3:
                                   file in the literal format the Python pipeline
                                   uses ("0varname", "1varname") and prints the
                                   DE / IE / F0 / F1 reductions
+      cbc_extractor.h/.cpp        CBC CoinConflictGraph arc extractor
+      graph_utils_gpu.h/.cu       optional CUDA reachability backend
+      gpu_conflict_extractor.h/.cu  GPU-native conflict-graph builder (core)
+      gpu_conflict_main.cpp       gpu_conflict_graph CLI driver
+      bench_reach_gpu.cpp         CPU-vs-GPU reachability micro-benchmark
     test/
       test_graph_utils.cpp        9 unit tests covering BuildCSR, Tarjan,
                                   condensation, BFS-vs-bitset agreement,
@@ -39,7 +44,12 @@ two questions the Associate Editor raised in round R3:
                                   paper's Example 1
     scripts/
       run_miplib_benchmark.py     four-config x five-seed benchmark harness
-      aggregate_overhead.py       LaTeX-table aggregator for the AE
+      aggregate_overhead.py       overhead/Table-1 aggregator
+      aggregate_solve_effect.py   one-hour solve-time aggregator
+      build_conflict_graph.py     CBC CoinConflictGraph -> arc file (python-mip)
+      launch_solve_effect_benchmark.sh   one-hour solve-effect launcher
+    results_tables/               result tables and CSVs cited by the paper
+    cmake/
     CMakeLists.txt
 
 ## Build
@@ -71,21 +81,25 @@ If you set the `SCIP_DIR` environment variable, you can omit the cmake flag.
     cd build && cmake --build . --target scip_implgraph -j
     cd ..
 
-    # 2. Run the four-config x five-seed sweep across MIPLIB.
-    #    Per-instance time limit 3600s; the full sweep takes O(weeks) on a
-    #    single CPU.  Pass --resume to allow restarts.
+    # 2. Table 1 / overhead sweep: 5 seeds, 300s per solve across MIPLIB.
+    #    Pass --resume to allow restarts.
     python scripts/run_miplib_benchmark.py \
         --binary  build/scip_implgraph \
         --miplib  /path/to/miplib2017/instances \
         --output  results/overhead.csv \
         --seeds   5 \
-        --time-limit 3600 \
+        --time-limit 300 \
         --resume
 
     # 3. Aggregate into LaTeX tables.
     python scripts/aggregate_overhead.py results/overhead.csv \
-        --out-per-instance ../paper/data_table_overhead_per_instance.tex \
-        --out-summary      ../paper/data_table_overhead_summary.tex
+        --out-per-instance results_tables/data_table_overhead_per_instance.tex \
+        --out-summary      results_tables/data_table_overhead_summary.tex
+
+    # 4. One-hour solve-effect rerun (3 seeds, 3600s on the 50 reduction-firing
+    #    instances): use scripts/launch_solve_effect_benchmark.sh, then
+    python scripts/aggregate_solve_effect.py results/solve_effect.csv \
+        --out results_tables/data_table_solve_effect.tex
 
 The per-instance table lists *every* MIPLIB instance, including those on
 which our plugin extracted zero reductions; the summary table reports the
@@ -138,15 +152,18 @@ against the Python pipeline (which the previous round used):
 The `verbose` knob controls the per-round `[implgraph]` log lines the
 benchmark harness greps for in `--write-stats` dumps.
 
+## GPU backends (optional, CUDA)
+
+GPU code is included for the reachability backend and for GPU-native
+conflict-graph construction.  The relevant files are
+`src/graph_utils_gpu.cu` (level-synchronous bitset reachability with a
+fused per-binary query), `src/gpu_conflict_extractor.cu`, and
+`src/gpu_conflict_main.cpp` (the `gpu_conflict_graph` CLI).  CUDA support
+is optional and enabled through CMake when a CUDA compiler is detected;
+without CUDA the plug-in falls back to the CPU bitset reachability pass.
+
 ## What's intentionally *not* here
 
-* GPU code.  The original prototype had `transitive_closure_torch` and
-  `transitive_closure_gpu` helpers in Python.  For a SCIP plug-in those
-  are the wrong design point: the reachability pass on the SCC
-  condensation DAG `H` is the only step that could benefit from GPU
-  parallelism, and `|C|` after probing is small enough on every observed
-  MIPLIB instance (typically O(10^5)) that a tight CPU bitset DP wins on
-  end-to-end wall time once you account for host<->device transfer.
 * MPS / LP file reader.  We delegate to SCIP's reader through
   `SCIPreadProb` in `cmain.cpp`; building our own would just duplicate
   several thousand lines of well-tested code.

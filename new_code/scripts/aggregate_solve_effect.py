@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+# =============================================================================
+#  aggregate_solve_effect.py
+#
+#  Reads a results CSV containing baseline_presolve_on and ours_on_top runs
+#  (1 hour time limit, 5 seeds) on the 50-instance reduction-firing subset,
+#  and emits a per-instance LaTeX table similar to the round-R3 Gurobi
+#  effect table (Table tab:imp-effect).  Columns:
+#
+#      instance | n_red | t_base (med, s) | t_ours (med, s) | ratio
+#                       | gap_base | gap_ours | nodes_base | nodes_ours
+#
+#  Highlight rows where ours_on_top flips a time-limit row to optimality,
+#  or where the ratio is <= 0.9 (10%+ improvement).  Boldface the better
+#  side per row.
+#
+#  Also emits a "headline" summary line: paired-seed geometric mean
+#  t_ours_on_top / t_baseline_on across instances where both completed.
+#
+#  Usage:
+#      python3 aggregate_solve_effect.py results.csv \\
+#          --out-table  paper/data_table_solve_effect.tex \\
+#          --out-summary paper/data_table_solve_summary.tex
+# =============================================================================
+
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+import statistics
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+
+def geo_mean(xs):
+    xs = [x for x in xs if x is not None and x > 0]
+    if not xs:
+        return None
+    return math.exp(sum(math.log(x) for x in xs) / len(xs))
+
+
+def median(xs):
+    xs = [x for x in xs if x is not None]
+    if not xs:
+        return None
+    return statistics.median(xs)
+
+
+def load(path: Path):
+    rows = []
+    with path.open() as f:
+        rows = list(csv.DictReader(f))
+    return rows
+
+
+def per_instance(rows):
+    """Returns one dict per instance with median t/gap/nodes for both configs."""
+    by = defaultdict(lambda: defaultdict(list))
+    for r in rows:
+        if r["config"] not in ("baseline_presolve_on", "ours_on_top"):
+            continue
+        by[r["instance"]][r["config"]].append(r)
+
+    out = []
+    for inst, cfgs in sorted(by.items()):
+        def med_solve(cfg):
+            xs = [float(r["solve_s"]) for r in cfgs.get(cfg, [])
+                  if r["solve_s"] and r["status"] in ("OPT", "TL")]
+            return median(xs)
+
+        def med_gap(cfg):
+            xs = []
+            for r in cfgs.get(cfg, []):
+                if r["gap_pct"] and r["gap_pct"] not in ("", "None"):
+                    try:
+                        xs.append(float(r["gap_pct"]))
+                    except ValueError:
+                        pass
+            return median(xs)
+
+        def med_nodes(cfg):
+            xs = []
+            for r in cfgs.get(cfg, []):
+                if r["nodes"] and r["nodes"] not in ("", "None"):
+                    try:
+                        xs.append(int(r["nodes"]))
+                    except ValueError:
+                        pass
+            return median(xs)
+
+        def status_summary(cfg):
+            statuses = [r["status"] for r in cfgs.get(cfg, [])]
+            if not statuses:
+                return "--"
+            n_opt = statuses.count("OPT")
+            n_tl  = statuses.count("TL")
+            n_other = len(statuses) - n_opt - n_tl
+            tags = []
+            if n_opt:   tags.append(f"{n_opt}OPT")
+            if n_tl:    tags.append(f"{n_tl}TL")
+            if n_other: tags.append(f"{n_other}ERR")
+            return "/".join(tags)
+
+        def max_red(cfg):
+            xs = []
+            for r in cfgs.get(cfg, []):
+                try:
+                    xs.append(int(r["plugin_de"]) + int(r["plugin_ie"])
+                              + int(r["plugin_f0"]) + int(r["plugin_f1"]))
+                except (ValueError, KeyError):
+                    pass
+            return max(xs) if xs else 0
+
+        tb = med_solve("baseline_presolve_on")
+        to = med_solve("ours_on_top")
+        gb = med_gap("baseline_presolve_on")
+        go = med_gap("ours_on_top")
+        nb = med_nodes("baseline_presolve_on")
+        no = med_nodes("ours_on_top")
+
+        ratio = (to / tb) if (tb is not None and to is not None and tb > 0) else None
+
+        out.append({
+            "instance": inst,
+            "n_red": max_red("ours_on_top"),
+            "t_base": tb, "t_ours": to,
+            "gap_base": gb, "gap_ours": go,
+            "nodes_base": nb, "nodes_ours": no,
+            "status_base": status_summary("baseline_presolve_on"),
+            "status_ours": status_summary("ours_on_top"),
+            "ratio": ratio,
+        })
+    return out
+
+
+def emit_table(rows, path: Path):
+    def fm(x, w=8, p=2):
+        return ("--" if x is None else f"{x:>{w}.{p}f}")
+    def fi(x, w=8):
+        if x is None:
+            return "--"
+        # statistics.median returns float on even-count lists; cast safely.
+        return f"{int(round(float(x))):>{w}d}"
+    with path.open("w") as f:
+        f.write("% Auto-generated by aggregate_solve_effect.py; do not hand-edit.\n")
+        f.write("\\small\n")
+        f.write("\\setlength{\\tabcolsep}{3pt}\n")
+        f.write("\\begin{tabular}{l|r|rr|rr|rr|r}\n\\hline\n")
+        f.write("Instance & \\#red.\\ & $t_{\\rm base}$ & $t_{\\rm ours}$ "
+                "& gap$_{\\rm base}$ & gap$_{\\rm ours}$ "
+                "& nodes$_{\\rm base}$ & nodes$_{\\rm ours}$ & ratio "
+                "\\\\\n\\hline\n")
+        for r in rows:
+            tb_s = fm(r["t_base"])
+            to_s = fm(r["t_ours"])
+            if r["ratio"] is not None and r["ratio"] <= 0.9:
+                to_s = f"\\textbf{{{to_s.strip()}}}"
+            f.write(
+                f"\\texttt{{{r['instance'].replace('_', r'\_')}}} & "
+                f"{r['n_red']:>5d} & {tb_s} & {to_s} & "
+                f"{fm(r['gap_base'], 6, 2)} & {fm(r['gap_ours'], 6, 2)} & "
+                f"{fi(r['nodes_base'])} & {fi(r['nodes_ours'])} & "
+                f"{fm(r['ratio'], 5, 3)} \\\\\n")
+        f.write("\\hline\n\\end{tabular}\n")
+
+
+def emit_summary(rows, path: Path):
+    with path.open("w") as f:
+        f.write("% Auto-generated by aggregate_solve_effect.py; do not hand-edit.\n")
+        f.write("\\small\n")
+        n_total = len(rows)
+        ratios = [r["ratio"] for r in rows
+                  if r["ratio"] is not None and r["ratio"] > 0]
+        gm = geo_mean(ratios)
+
+        n_improve = sum(1 for r in ratios if r <= 0.9)
+        n_within  = sum(1 for r in ratios if 0.9 < r < 1.1)
+        n_regress = sum(1 for r in ratios if r >= 1.1)
+
+        flips = []
+        for r in rows:
+            if r["status_base"] and r["status_ours"]:
+                base_tl_only = ("TL" in r["status_base"] and "OPT" not in r["status_base"])
+                ours_has_opt = "OPT" in r["status_ours"]
+                if base_tl_only and ours_has_opt:
+                    flips.append(r["instance"])
+
+        f.write("\\begin{itemize}\n")
+        f.write(f"\\item Instances reported: {n_total}\n")
+        if gm is not None:
+            f.write(f"\\item Paired-seed geometric-mean "
+                    f"$t_{{\\rm ours}}/t_{{\\rm base}}$: ${gm:.3f}$ "
+                    f"({len(ratios)} instances with both runs)\n")
+        f.write(f"\\item Speedup ($\\le 0.9\\times$): {n_improve} instances\n")
+        f.write(f"\\item Within $\\pm 10\\%$: {n_within} instances\n")
+        f.write(f"\\item Regression ($\\ge 1.1\\times$): {n_regress} instances\n")
+        if flips:
+            flip_str = ", ".join(f"\\texttt{{{i}}}" for i in flips)
+            f.write(f"\\item Time-limit$\\rightarrow$optimality flips with "
+                    f"our plug-in: {flip_str}\n")
+        f.write("\\end{itemize}\n")
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("csv", type=Path)
+    p.add_argument("--out-table",   required=True, type=Path)
+    p.add_argument("--out-summary", required=True, type=Path)
+    args = p.parse_args()
+    if not args.csv.is_file():
+        sys.exit(f"not found: {args.csv}")
+
+    rows = load(args.csv)
+    print(f"[aggregate-solve] loaded {len(rows)} rows", file=sys.stderr)
+
+    per_inst = per_instance(rows)
+    args.out_table.parent.mkdir(parents=True, exist_ok=True)
+    args.out_summary.parent.mkdir(parents=True, exist_ok=True)
+    emit_table(per_inst, args.out_table)
+    emit_summary(per_inst, args.out_summary)
+    print(f"[aggregate-solve] wrote {args.out_table}", file=sys.stderr)
+    print(f"[aggregate-solve] wrote {args.out_summary}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
